@@ -50,7 +50,7 @@ for i, t in enumerate(turns):
             text, ref = text + ref[:cut], ref[cut:]
             break
     prompt = e.tokenize_prompt(text)
-    max_tokens = min(1024, int(1.3 * len(e.tokenize(ref.encode()))) + 32)
+    max_tokens = min(1024, int(1.3 * len(e.tokenize(ref.encode()))) + 32, e.llm.n_ctx() - len(prompt) - 70)
     e.cached = []
     ts = time.perf_counter()
     e.prefill(prompt)
