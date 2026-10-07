@@ -1,4 +1,4 @@
-import argparse, json, os, sys, time
+import argparse, collections, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mlx.core as mx
 from mlx_lm import stream_generate as mlx_generate
@@ -40,10 +40,16 @@ from verbatim import spec_mlx
 from verbatim.drafter import Verbatim
 
 COSTS = {}
+CACHE = f"data/verify_costs_{'stock' if args.stock else 'verbatim'}.json"
+cached = json.load(open(CACHE)) if os.path.exists(CACHE) else {}
 for en in ((False,) if args.stock else (True, "strict")):
     mlx_fast.ENABLED, mlx_fast.STRICT = en is True, en == "strict"
+    if str(en) in cached:
+        COSTS[en] = cached[str(en)]
+        continue
     COSTS[en] = [spec_mlx.verify_costs(model, ctx=c, widths=16 if en == "strict" else max(16, args.copy_max + 1)) for c in (512, 6000)]
     print("verify cost ms", en, [[round(x * 1000) for x in c[1:]] for c in COSTS[en]], flush=True)
+json.dump({str(k): v for k, v in COSTS.items()}, open(CACHE, "w"))
 mlx_fast.STRICT = False
 
 
@@ -56,6 +62,16 @@ tb = lambda b: tok._tokenizer.encode(b.decode("utf-8", "replace"), add_special_t
 db = lambda ids: tok._tokenizer.decode(ids).encode()
 
 
+STEPS = {}
+
+
+def summarize(cfg, steps):
+    by = collections.defaultdict(lambda: [0, 0, 0])
+    for k, a, src in steps:
+        by[src][0] += 1; by[src][1] += a + 1; by[src][2] += k
+    STEPS[cfg] = {s: {"steps": n, "tokens": t, "drafted": d} for s, (n, t, d) in by.items()}
+
+
 def run(cfg, ids):
     mlx_fast.ENABLED = cfg.startswith("fast") or (cfg.startswith("adapt") and not cfg.endswith("stock"))
     mlx_fast.STRICT = cfg in ("sbase", "sverb") or cfg.startswith(("strict", "sadapt"))
@@ -64,12 +80,14 @@ def run(cfg, ids):
         cm = 15 if mlx_fast.STRICT else args.copy_max
         copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=cm)
         out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm)
+        summarize(cfg, steps)
         return out, dt, len(steps)
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
         cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
         cm = 15 if mlx_fast.STRICT else args.copy_max
-        copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=cm) if cfg.endswith("c") else None
-        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block, copy_max=cm)
+        copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=cm) if cfg.endswith(("c", "cs")) else None
+        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block, copy_max=cm, seed=cfg.endswith("cs"))
+        summarize(cfg, steps)
         return out, dt, len(steps)
     if cfg in ("base", "sbase"):
         gen = mlx_generate(model, tok, ids, max_tokens=args.max_tokens, sampler=make_sampler(0.0))
@@ -115,7 +133,7 @@ with open(args.out, "a") as fh:
             for cfg, (out, dt, steps) in res.items():
                 base = ref(cfg)
                 n_same = next((j for j in range(min(len(out), len(base or []))) if out[j] != base[j]), min(len(out), len(base or []))) if base else None
-                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same, "out": out}
+                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same, "out": out, "sources": STEPS.pop(cfg, None)}
                 fh.write(json.dumps(rec) + "\n")
                 fh.flush()
             line = " ".join(f"{c}={len(o)/d:.1f}t/s({len(o)/max(1,s):.1f}/pass){'' if ref(c) is None or o == ref(c) else '!'}" for c, (o, d, s) in res.items())
