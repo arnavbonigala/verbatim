@@ -56,11 +56,13 @@ def init(corpus=b""):
     from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
     from verbatim.drafter import Verbatim
     from verbatim.drafter_exp import Verbatim as VX
+    from verbatim.suffix_baseline import SuffixDecoding
     llm = Llama(args.tok, vocab_only=True, verbose=False)
     tok = llm
     COST = json.load(open(args.cost))
     t = lambda b: llm.tokenize(b, add_bos=False, special=False)
     d = llm.detokenize
+    corpus_ids = t(corpus) if corpus and (not args.configs or "suffix-global" in args.configs) else []
     make = {
         "pld": lambda: LlamaPromptLookupDecoding(),
         "pld15": lambda: LlamaPromptLookupDecoding(num_pred_tokens=15),
@@ -68,6 +70,8 @@ def init(corpus=b""):
         "verbatim": lambda: Verbatim(t, d, COST),
         "verbatim-noforms": lambda: Verbatim(t, d, COST, forms=False),
         "verbatim-b4": lambda: Verbatim(t, d, COST, branches=4),
+        "suffix": lambda: SuffixDecoding(),
+        "suffix-global": lambda: SuffixDecoding(corpus_ids=corpus_ids),
         "verbatim-corpus": lambda: VX(t, d, COST, corpus=corpus),
         "verbatim-max": lambda: Verbatim(t, d, None, k_max=64),
     }
