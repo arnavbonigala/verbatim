@@ -143,7 +143,7 @@ class Verbatim:
         self.last_draft = []
         if not conts:
             return []
-        self.last_bucket = min(length.bit_length(), 12)
+        self.last_bucket = (self.prev[0] < len(self.base), min(length.bit_length(), 12))
         k = self.draft_len(self.k_max, self.last_bucket)
         if k == 0:
             return []
