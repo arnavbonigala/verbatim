@@ -7,7 +7,10 @@ LINENO = re.compile(rb"^ *\d+(?:\t|: |:$| \| ?)", re.M)
 SEP = b"\x00"
 
 
-def emission_forms(text: bytes) -> list[bytes]:
+def emission_forms(text: bytes, agspec=False) -> list[bytes]:
+    if agspec:
+        lines = text.split(b"\n")
+        return [text] + [b"\n".join(p + l for l in lines) for p in (b" ", b"-")] + [json.dumps(text.decode("utf-8", "replace"))[1:-1].encode()]
     raw = LINENO.sub(b"", text)
     lines = raw.split(b"\n")
     forms = [raw]
@@ -41,7 +44,7 @@ class Verbatim:
         if not self.use_forms or cut <= self.formed:
             return
         chunk = self.history[self.formed:cut]
-        self.base += b"".join(f + SEP for f in emission_forms(chunk) if f != chunk)
+        self.base += b"".join(f + SEP for f in emission_forms(chunk, self.use_forms == "agspec") if f != chunk)
         self.formed = cut
 
     def _sync(self, ids):

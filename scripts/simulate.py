@@ -71,6 +71,7 @@ def init(corpus=b""):
         "verbatim-noforms": lambda: Verbatim(t, d, COST, forms=False),
         "verbatim-b4": lambda: Verbatim(t, d, COST, branches=4),
         "suffix": lambda: SuffixDecoding(),
+        "agspec-forms": lambda: Verbatim(t, d, COST, forms="agspec"),
         "suffix-global": lambda: SuffixDecoding(corpus_ids=corpus_ids),
         "verbatim-corpus": lambda: VX(t, d, COST, corpus=corpus),
         "verbatim-max": lambda: Verbatim(t, d, None, k_max=64),
