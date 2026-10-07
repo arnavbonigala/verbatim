@@ -23,7 +23,7 @@ def verify_costs(model, ctx=512, widths=16):
     return cost
 
 
-def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=True, copier=None, k_fixed=None):
+def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=True, copier=None, k_fixed=None, backoff=8, log=None):
     _patch_model(model, draft.config.target_layer_ids)
     draft.bind(model)
     mask_id = int(draft.config.mask_token_id)
@@ -35,8 +35,19 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
         c.offset = offset
     tokens = [int(mx.argmax(logits[0, -1]).item())]
     steps = []
+    pred, got, skip, idle, copy_rate = 4.0, 4.0, 0, 0, 0.8
+    prompt_list = prompt.tolist()
     t0 = time.perf_counter()
     while len(tokens) < max_tokens and tokens[-1] not in eos:
+        if skip > 0:
+            lt = model(mx.array([[tokens[-1]]]), target_cache)
+            hidden = mx.concatenate([hidden, mx.concatenate(model._hidden_states, axis=-1)], axis=1)
+            nxt = mx.argmax(lt[0, -1])
+            mx.eval(nxt, hidden)
+            tokens.append(int(nxt.item()))
+            steps.append((0, 0, "plain"))
+            skip -= 1
+            continue
         block_in = mx.array([[tokens[-1]] + [mask_id] * (block - 1)])
         dl = draft(block_in, hidden, draft_cache, logits_start=1)
         trim_n = draft_cache[0].offset - (prompt.size + len(tokens) - 1)
@@ -51,14 +62,18 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
         if k_fixed is not None:
             k = k_fixed
         elif adaptive:
-            exp_acc = np.concatenate([[0.0], np.cumsum(np.cumprod(d_p))])
+            exp_acc = np.concatenate([[0.0], np.cumsum(np.cumprod(d_p))]) * min(1.0, got / pred)
             rate = [(1 + exp_acc[k]) / cost[k + 1] for k in range(block)]
             k = int(np.argmax(rate))
+            idle = idle + 1 if k == 0 else 0
+            if backoff and idle >= 2:
+                skip, idle = backoff, 0
         else:
             k = block - 1
         if copier is not None:
-            c = [int(x) for x in copier(np.array(list(prompt.tolist()) + tokens, dtype=np.intc))][: block - 1]
-            if len(c) > (exp_acc[k] if adaptive and k_fixed is None else k):
+            c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][: block - 1]
+            mine = (1 + (exp_acc[k] if adaptive and k_fixed is None else k)) / cost[k + 1]
+            if len(c) >= 4 and copier.last_bucket[1] >= 6 and (1 + copy_rate * len(c)) / cost[len(c) + 1] > mine:
                 d_tok, k, src = c, len(c), "copy"
         k = min(k, max_tokens - len(tokens))
         verify_in = mx.array([[tokens[-1]] + d_tok[:k]])
@@ -74,6 +89,13 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             new = new[: stop + 1]
         tokens.extend(new)
         steps.append((k, a, src))
+        if log is not None:
+            top2 = mx.argpartition(-probs, 1, axis=-1)[:, :2]
+            log.append((d_tok[:k], t_tok, a, top2.tolist(), mx.take_along_axis(probs, top2, axis=-1).tolist()))
+        if adaptive and k_fixed is None and src == "dflash" and k > 0:
+            pred, got = 0.95 * pred + exp_acc[k] / min(1.0, got / pred), 0.95 * got + a
+        if src == "copy":
+            copy_rate = 0.8 * copy_rate + 0.2 * a / k
         if k - a > 0:
             _trim_recent_cache(target_cache, k - a)
         hidden = hidden[:, : a + 1, :]
