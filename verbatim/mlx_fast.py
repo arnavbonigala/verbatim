@@ -9,6 +9,7 @@ import mlx_lm.models.base as base
 from verbatim import attn, qmv
 
 MAX_M = 16
+ENABLED = True
 
 
 def _time(f, n=8):
@@ -44,7 +45,7 @@ def _tune_attention(T=4096, H=28, kvh=4, D=128, dtype=mx.float16):
     return use
 
 
-def accelerate(model, profile_path=None):
+def accelerate(model, profile_path=None, strict=False):
     shapes = {}
     for _, m in model.named_modules():
         if isinstance(m, nn.QuantizedLinear) and m.bits == 4 and m.group_size == 64 and m.weight.shape[0] % (8 * qmv.RT * qmv.SIMDS) == 0:
@@ -58,6 +59,8 @@ def accelerate(model, profile_path=None):
         if profile_path:
             os.makedirs(os.path.dirname(profile_path), exist_ok=True)
             json.dump(plan, open(profile_path, "w"))
+    if strict:
+        plan = {"linear": {k: [True] * MAX_M for k in plan["linear"]}, "attention": [True] * MAX_M}
     for s, ms in shapes.items():
         use = plan["linear"][f"{s[0]}x{s[1]}"]
         for m in ms:
@@ -67,7 +70,7 @@ def accelerate(model, profile_path=None):
     def linear(self, x):
         rows = x.size // x.shape[-1]
         use = getattr(self, "_use", None)
-        if use and rows <= MAX_M and use[rows - 1]:
+        if ENABLED and use and rows <= MAX_M and use[rows - 1]:
             y = qmv.qmv(x, self._vb, self.scales, self.biases)
             return y + self.bias if "bias" in self else y
         return stock(self, x)
@@ -78,7 +81,7 @@ def accelerate(model, profile_path=None):
 
     def attention(queries, keys, values, cache, scale, mask, sinks=None):
         L = queries.shape[2]
-        if sinks is None and not hasattr(cache, "bits") and L <= MAX_M and use_attn[L - 1]:
+        if ENABLED and sinks is None and not hasattr(cache, "bits") and L <= MAX_M and use_attn[L - 1] and keys.shape[2] >= 1024:
             return attn.attention(queries, keys, values, scale)
         return sdpa(queries, keys, values, cache, scale, mask, sinks)
 

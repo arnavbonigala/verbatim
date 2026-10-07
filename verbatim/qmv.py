@@ -27,9 +27,9 @@ SOURCE = """
     }
     for (int g = 0; g < groups; g++) {
         uint2 wr[RT];
-        float s[RT], b[RT];
+        half2 s[RT], b[RT];
         for (int r = 0; r < RT; r++) {
-            wr[r] = wn[r]; s[r] = sn[r]; b[r] = bn[r];
+            wr[r] = wn[r]; s[r] = half2((half)sn[r]); b[r] = half2((half)bn[r]);
         }
         if (g + 1 < groups) {
             for (int r = 0; r < RT; r++) {
@@ -45,10 +45,11 @@ SOURCE = """
             for (int mt = 0; mt < MT; mt++)
                 simdgroup_load(B[mt], x + mt * 8 * K + k0, K, ulong2(0, 0), true);
             for (int r = 0; r < RT; r++) {
-                uint w = (wr[r][t >> 2] >> ((t & 3) * 8)) & 0xFF;
+                uint pair = ((wr[r][t >> 2] >> ((t & 3) * 4)) & 0x000F000Fu) | 0x64006400u;
+                half2 h = fma(as_type<half2>(pair) - half2(1024.0h), s[r], b[r]);
                 simdgroup_matrix<half, 8, 8> A;
-                A.thread_elements()[0] = (half)(s[r] * (float)(w & 0xF) + b[r]);
-                A.thread_elements()[1] = (half)(s[r] * (float)(w >> 4) + b[r]);
+                A.thread_elements()[0] = h.x;
+                A.thread_elements()[1] = h.y;
                 for (int mt = 0; mt < MT; mt++)
                     simdgroup_multiply_accumulate(C[r][mt], A, B[mt], C[r][mt]);
             }
@@ -74,7 +75,7 @@ def repack(wq):
     nib = np.stack([w & 0xF, w >> 4], -1).reshape(w.shape[0], -1, 64)
     t, j, f = np.meshgrid(np.arange(8), np.arange(2), np.arange(4), indexing="ij")
     old = 8 * t + 2 * f + j
-    new = 16 * f + 2 * t + j
+    new = 16 * f + 8 * (t // 4) + (t % 4) + 4 * j
     out = np.empty_like(nib)
     out[..., new.ravel()] = nib[..., old.ravel()]
     out = out.reshape(w.shape[0], -1, 2)

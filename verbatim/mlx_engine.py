@@ -10,11 +10,12 @@ from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache
 
 
 class Engine:
-    def __init__(self, model_path, vocab_gguf, draft_path=None, fast=True):
+    def __init__(self, model_path, vocab_gguf, draft_path=None, fast=True, strict=False):
         self.model, hf_tok = load(model_path)
-        if fast:
+        mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
+        if fast or strict:
             from verbatim.mlx_fast import accelerate
-            accelerate(self.model, f"data/mlx_plan_{os.path.basename(model_path.rstrip('/'))}.json")
+            accelerate(self.model, f"data/mlx_plan_{os.path.basename(model_path.rstrip('/'))}.json", strict=strict)
         self.vocab = Llama(vocab_gguf, vocab_only=True, verbose=False)
         self.eog = {hf_tok.eos_token_id, *[hf_tok.convert_tokens_to_ids(t) for t in ("<|im_end|>", "<|endoftext|>")]}
         self.cache = make_prompt_cache(self.model)

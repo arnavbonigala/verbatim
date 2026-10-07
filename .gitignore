@@ -8,3 +8,4 @@ data/raw/
 .playwright-mcp/
 demo/data.js.bak
 .claude/
+.venv-dflash/

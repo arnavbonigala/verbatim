@@ -16,17 +16,19 @@ ap.add_argument("--vocab", default="models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
 ap.add_argument("--draft", default="")
 ap.add_argument("--draft-len", type=int, default=4)
 ap.add_argument("--stock", action="store_true")
+ap.add_argument("--strict", action="store_true")
 args = ap.parse_args()
+kmax = 15 if args.strict else 64
 
 if args.engine == "mlx":
     from verbatim.mlx_engine import Engine
-    e = Engine(args.model, args.vocab, args.draft or None, fast=not args.stock)
+    e = Engine(args.model, args.vocab, args.draft or None, fast=not args.stock, strict=args.strict)
     n_ctx = e.n_ctx()
 else:
     from verbatim.llama_engine import Engine
     e = Engine(args.model, n_ctx=12288)
     n_ctx = e.llm.n_ctx()
-tag = os.path.basename(args.model.rstrip("/")).replace(".gguf", "") + ("-stock" if args.stock else "")
+tag = os.path.basename(args.model.rstrip("/")).replace(".gguf", "") + ("-stock" if args.stock else "") + ("-strict" if args.strict else "")
 cost = e.cost_profile(f"data/cost_{tag}.json")
 flat = [0.0] + [1.0] * 66
 shared = {"verbatim": {}, "verbatim-noforms": {}, "hybrid": {}}
@@ -37,7 +39,7 @@ def make(name):
         "none": lambda: None,
         "pld": lambda: LlamaPromptLookupDecoding(),
         "pld16": lambda: LlamaPromptLookupDecoding(num_pred_tokens=15),
-        "verbatim": lambda: Verbatim(e.tokenize, e.detokenize, cost, shared=shared["verbatim"]),
+        "verbatim": lambda: Verbatim(e.tokenize, e.detokenize, cost, k_max=kmax, shared=shared["verbatim"]),
         "verbatim-noforms": lambda: Verbatim(e.tokenize, e.detokenize, cost, forms=False, shared=shared["verbatim-noforms"]),
         "verbatim-fixed": lambda: Verbatim(e.tokenize, e.detokenize, flat, k_max=31),
         "draft": lambda: None,
