@@ -10,6 +10,7 @@ from verbatim import attn, qmv
 
 MAX_M = 16
 ENABLED = True
+STRICT = False
 
 
 def _time(f, n=8):
@@ -28,7 +29,7 @@ def _tune_linear(m):
     for M in range(1, MAX_M + 1):
         x = mx.random.normal((1, M, K)).astype(m.scales.dtype)
         a = _time(lambda: [stock(m, x) for _ in range(4)])
-        b = _time(lambda: [qmv.qmv(x, m._vb, m.scales, m.biases) for _ in range(4)])
+        b = _time(lambda: [qmv.qmv(x, m._vb, m._sb) for _ in range(4)])
         use.append(b < 0.97 * a)
     return use
 
@@ -50,6 +51,7 @@ def accelerate(model, profile_path=None, strict=False):
     for _, m in model.named_modules():
         if isinstance(m, nn.QuantizedLinear) and m.bits == 4 and m.group_size == 64 and m.weight.shape[0] % (8 * qmv.RT * qmv.SIMDS) == 0:
             m._vb = qmv.repack(m.weight)
+            m._sb = qmv.pack_sb(m.scales, m.biases)
             shapes.setdefault(tuple(m.weight.shape), []).append(m)
     plan = json.load(open(profile_path)) if profile_path and os.path.exists(profile_path) else None
     if plan is None:
@@ -70,8 +72,8 @@ def accelerate(model, profile_path=None, strict=False):
     def linear(self, x):
         rows = x.size // x.shape[-1]
         use = getattr(self, "_use", None)
-        if ENABLED and use and rows <= MAX_M and use[rows - 1]:
-            y = qmv.qmv(x, self._vb, self.scales, self.biases)
+        if use and rows <= MAX_M and (STRICT or (ENABLED and use[rows - 1])):
+            y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and STRICT else qmv.qmv(x, self._vb, self._sb)
             return y + self.bias if "bias" in self else y
         return stock(self, x)
 
@@ -81,7 +83,7 @@ def accelerate(model, profile_path=None, strict=False):
 
     def attention(queries, keys, values, cache, scale, mask, sinks=None):
         L = queries.shape[2]
-        if ENABLED and sinks is None and not hasattr(cache, "bits") and L <= MAX_M and use_attn[L - 1] and keys.shape[2] >= 1024:
+        if sinks is None and not hasattr(cache, "bits") and L <= MAX_M and (STRICT or (ENABLED and use_attn[L - 1] and keys.shape[2] >= 1024)):
             return attn.attention(queries, keys, values, scale)
         return sdpa(queries, keys, values, cache, scale, mask, sinks)
 

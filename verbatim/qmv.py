@@ -10,40 +10,44 @@ SOURCE = """
     short qid = lane / 4;
     short fm = (qid & 4) + ((lane / 2) % 4);
     short fn = (qid & 2) * 2 + (lane % 2) * 2;
-    int words = K / 8;
     int groups = K / 64;
     const device uint2* wv = (const device uint2*)wq;
+    const device half2* sbv = (const device half2*)sb;
     simdgroup_matrix<float, 8, 8> C[RT][MT];
     for (int r = 0; r < RT; r++)
         for (int mt = 0; mt < MT; mt++)
             C[r][mt] = simdgroup_matrix<float, 8, 8>(0);
+    int base[RT];
     uint2 wn[RT];
-    float sn[RT], bn[RT];
+    half2 sbn[RT];
     for (int r = 0; r < RT; r++) {
-        int n = row0 + 8 * r + fm;
-        wn[r] = wv[(n * words + fn) / 2];
-        sn[r] = (float)scales[n * groups];
-        bn[r] = (float)biases[n * groups];
+        base[r] = ((row0 + 8 * r) / 8) * groups * 8 + fm;
+        wn[r] = wv[base[r] * 4 + fn / 2];
+        sbn[r] = sbv[base[r]];
     }
     for (int g = 0; g < groups; g++) {
         uint2 wr[RT];
         half2 s[RT], b[RT];
         for (int r = 0; r < RT; r++) {
-            wr[r] = wn[r]; s[r] = half2((half)sn[r]); b[r] = half2((half)bn[r]);
+            wr[r] = wn[r]; s[r] = half2(sbn[r].x); b[r] = half2(sbn[r].y);
         }
         if (g + 1 < groups) {
             for (int r = 0; r < RT; r++) {
-                int n = row0 + 8 * r + fm;
-                wn[r] = wv[(n * words + (g + 1) * 8 + fn) / 2];
-                sn[r] = (float)scales[n * groups + g + 1];
-                bn[r] = (float)biases[n * groups + g + 1];
+                int i = base[r] + (g + 1) * 8;
+                wn[r] = wv[i * 4 + fn / 2];
+                sbn[r] = sbv[i];
             }
         }
         for (int t = 0; t < 8; t++) {
             int k0 = g * 64 + t * 8;
             simdgroup_matrix<half, 8, 8> B[MT];
-            for (int mt = 0; mt < MT; mt++)
-                simdgroup_load(B[mt], x + mt * 8 * K + k0, K, ulong2(0, 0), true);
+            for (int mt = 0; mt < MT; mt++) {
+                int m = mt * 8 + fn;
+                half v0 = (half)x[min(m, M - 1) * K + k0 + fm];
+                half v1 = (half)x[min(m + 1, M - 1) * K + k0 + fm];
+                B[mt].thread_elements()[0] = m < M ? v0 : 0.0h;
+                B[mt].thread_elements()[1] = m + 1 < M ? v1 : 0.0h;
+            }
             for (int r = 0; r < RT; r++) {
                 uint pair = ((wr[r][t >> 2] >> ((t & 3) * 4)) & 0x000F000Fu) | 0x64006400u;
                 half2 h = fma(as_type<half2>(pair) - half2(1024.0h), s[r], b[r]);
@@ -56,17 +60,66 @@ SOURCE = """
         }
     }
     for (int r = 0; r < RT; r++)
-        for (int mt = 0; mt < MT; mt++)
-            simdgroup_store(C[r][mt], out + mt * 8 * N + row0 + 8 * r, N, ulong2(0, 0), true);
+        for (int mt = 0; mt < MT; mt++) {
+            int m = mt * 8 + fn;
+            int n = row0 + 8 * r + fm;
+            if (m < M) out[m * N + n] = (OT)C[r][mt].thread_elements()[0];
+            if (m + 1 < M) out[(m + 1) * N + n] = (OT)C[r][mt].thread_elements()[1];
+        }
 """
 
 _kernel = mx.fast.metal_kernel(
     name="verbatim_qmv",
-    input_names=["x", "wq", "scales", "biases"],
+    input_names=["x", "wq", "sb"],
     output_names=["out"],
     source=SOURCE,
     header="#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
 )
+
+
+GEMV_SOURCE = """
+    int n = thread_position_in_grid.x;
+    int groups = K / 64;
+    int base = (n / 8) * groups * 8 + n % 8;
+    const device uint4* w = (const device uint4*)wq;
+    const device half2* sbv = (const device half2*)sb;
+    threadgroup half xs[K];
+    for (int i = thread_position_in_threadgroup.x; i < K; i += threads_per_threadgroup.x)
+        xs[i] = (half)x[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float acc = 0.0f;
+    uint4 n0 = w[base * 2], n1 = w[base * 2 + 1];
+    half2 sbn = sbv[base];
+    for (int g = 0; g < groups; g++) {
+        uint ws[8] = {n0.x, n0.y, n0.z, n0.w, n1.x, n1.y, n1.z, n1.w};
+        half s = sbn.x, b = sbn.y;
+        if (g + 1 < groups) {
+            int i = base + (g + 1) * 8;
+            n0 = w[i * 2]; n1 = w[i * 2 + 1]; sbn = sbv[i];
+        }
+        for (int k = 0; k < 64; k++) {
+            int t = k / 8, f = (k % 8) / 2, j = k % 2;
+            half h = fma((half)((ws[2 * f + t / 4] >> (4 * ((t % 4) + 4 * j))) & 15u), s, b);
+            acc = fma((float)h, (float)xs[g * 64 + k], acc);
+        }
+    }
+    out[n] = (OT)acc;
+"""
+
+_gemv = mx.fast.metal_kernel(name="verbatim_gemv", input_names=["x", "wq", "sb"], output_names=["out"], source=GEMV_SOURCE)
+
+
+def gemv(x, wq, sb, tg=128):
+    *lead, K = x.shape
+    N = wq.shape[0]
+    return _gemv(
+        inputs=[x, wq, sb],
+        template=[("K", K), ("OT", x.dtype)],
+        grid=(N, 1, 1),
+        threadgroup=(tg, 1, 1),
+        output_shapes=[(*lead, N)],
+        output_dtypes=[x.dtype],
+    )[0]
 
 
 def repack(wq):
@@ -79,25 +132,30 @@ def repack(wq):
     out = np.empty_like(nib)
     out[..., new.ravel()] = nib[..., old.ravel()]
     out = out.reshape(w.shape[0], -1, 2)
-    return mx.array((out[..., 0] | (out[..., 1] << 4)).astype(np.uint8).view(np.uint32))
+    words = (out[..., 0] | (out[..., 1] << 4)).astype(np.uint8).view(np.uint32)
+    N, G = words.shape[0], words.shape[1] // 8
+    return mx.array(words.reshape(N // 8, 8, G, 8).transpose(0, 2, 1, 3).reshape(N, -1))
 
 
-def qmv(x, wq, scales, biases, RT=RT, SIMDS=SIMDS):
+def pack_sb(scales, biases):
+    import numpy as np
+    sb = np.stack([np.array(scales.astype(mx.float16)), np.array(biases.astype(mx.float16))], -1)
+    N, G = sb.shape[:2]
+    return mx.array(sb.reshape(N // 8, 8, G, 2).transpose(0, 2, 1, 3).reshape(N, -1).view(np.uint32))
+
+
+def qmv(x, wq, sb, RT=RT, SIMDS=SIMDS):
     *lead, K = x.shape
-    x2 = x.reshape(-1, K).astype(mx.float16)
-    M, N = x2.shape[0], wq.shape[0]
-    mt = (M + 7) // 8
-    if M % 8:
-        x2 = mx.concatenate([x2, mx.zeros((mt * 8 - M, K), mx.float16)])
+    M, N = x.size // K, wq.shape[0]
     out = _kernel(
-        inputs=[x2, wq, scales, biases],
-        template=[("MT", mt), ("K", K), ("N", N), ("RT", RT), ("SIMDS", SIMDS)],
+        inputs=[x, wq, sb],
+        template=[("MT", (M + 7) // 8), ("M", M), ("K", K), ("N", N), ("RT", RT), ("SIMDS", SIMDS), ("OT", x.dtype)],
         grid=(N // (8 * RT * SIMDS) * SIMDS * 32, 1, 1),
         threadgroup=(SIMDS * 32, 1, 1),
-        output_shapes=[(mt * 8, N)],
-        output_dtypes=[mx.float32],
+        output_shapes=[(*lead, N)],
+        output_dtypes=[x.dtype],
     )[0]
-    return out[:M].astype(x.dtype).reshape(*lead, N)
+    return out
 
 
 def patch(model, lo=4, hi=16):
@@ -106,13 +164,14 @@ def patch(model, lo=4, hi=16):
     for _, m in model.named_modules():
         if isinstance(m, nn.QuantizedLinear) and m.bits == 4 and m.group_size == 64 and m.weight.shape[0] % (8 * RT * SIMDS) == 0:
             m._vb = repack(m.weight)
+            m._sb = pack_sb(m.scales, m.biases)
             n += 1
     orig = nn.QuantizedLinear.__call__
 
     def call(self, x):
         rows = x.size // x.shape[-1]
         if hasattr(self, "_vb") and lo <= rows <= hi:
-            y = qmv(x, self._vb, self.scales, self.biases)
+            y = qmv(x, self._vb, self._sb)
             return y + self.bias if "bias" in self else y
         return orig(self, x)
 
@@ -135,14 +194,15 @@ if __name__ == "__main__":
         w = mx.random.normal((N, K)).astype(mx.bfloat16) * 0.02
         wq0, s, b = mx.quantize(w, group_size=64, bits=4)
         wq = repack(wq0)
+        sbp = pack_sb(s, b)
         for M in [1, 2, 4, 8, 16]:
             x = mx.random.normal((M, K)).astype(mx.bfloat16)
             ref = mx.quantized_matmul(x, wq0, s, b, transpose=True, group_size=64, bits=4).astype(mx.float32)
-            got = qmv(x, wq, s, b).astype(mx.float32)
+            got = qmv(x, wq, sbp).astype(mx.float32)
             err = float(mx.abs(got - ref).max() / mx.abs(ref).max())
-            solo = mx.concatenate([qmv(x[i : i + 1], wq, s, b) for i in range(M)]).astype(mx.float32)
+            solo = mx.concatenate([qmv(x[i : i + 1], wq, sbp) for i in range(M)]).astype(mx.float32)
             inv = bool(mx.array_equal(solo, got))
             t_ref = bench(lambda: mx.quantized_matmul(x, wq0, s, b, transpose=True, group_size=64, bits=4))
-            t_new = bench(lambda: qmv(x, wq, s, b))
+            t_new = bench(lambda: qmv(x, wq, sbp))
             gb = N * K / 2 / 1e9
             print(f"N={N} K={K} M={M} err={err:.1e} batch_invariant={inv} mlx={t_ref*1e6:.0f}us new={t_new*1e6:.0f}us ({gb/t_new:.0f} GB/s)")
