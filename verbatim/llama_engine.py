@@ -91,6 +91,9 @@ class Engine:
                 a += 1
             nxt = self._argmax(a)
             out.extend(draft[:a])
+            cost = getattr(drafter, "cost", None)
+            if cost is not None and len(draft) + 1 < len(cost):
+                cost[len(draft) + 1] = 0.9 * cost[len(draft) + 1] + 0.1 * (time.perf_counter() - ts)
             steps.append({"pos": len(out) - a - 1, "draft": len(draft), "accepted": a, "dt": time.perf_counter() - ts})
             t = nxt
         self.cached = prompt + out
