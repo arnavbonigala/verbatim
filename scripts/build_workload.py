@@ -43,9 +43,8 @@ def kind(msgs, i):
 def fit(msgs, i):
     head = [msgs[0], {"role": msgs[1]["role"], "content": msgs[1]["content"] + OMIT}]
     prev = msgs[2:i]
-    full = render(msgs[:i])
-    if ntok(full) <= BUDGET:
-        return full
+    if ntok(render(msgs[:i])) <= BUDGET:
+        return msgs[:i]
     base = ntok(render(head)) + 8
     kept, used = [], 0
     for m in reversed(prev):
@@ -58,8 +57,7 @@ def fit(msgs, i):
         kept.pop(0)
     if not kept or kept[-1] is not prev[-1]:
         return None
-    p = render(head + kept)
-    return p if ntok(p) <= BUDGET else None
+    return head + kept if ntok(render(head + kept)) <= BUDGET else None
 
 
 rows = [r for r in pq.read_table(SHARD, columns=["model", "messages", "instance_id", "traj_id"]).to_pylist() if r["model"] == MODEL]
@@ -79,9 +77,10 @@ for r in rows:
     cands = [(i, k) for i, k in cands if k and counts[k] < QUOTA[k]]
     random.Random(r["traj_id"]).shuffle(cands)
     for i, k in cands:
-        prompt = fit(msgs, i)
-        if prompt is None:
+        ctx = fit(msgs, i)
+        if ctx is None:
             continue
+        prompt = render(ctx)
         ref = msgs[i]["content"]
         picked.append({
             "id": f"{k}-{counts[k]:02d}",
@@ -89,6 +88,7 @@ for r in rows:
             "turn_index": i,
             "kind": k,
             "prompt": prompt,
+            "messages": ctx,
             "reference": ref,
             "max_tokens": min(1024, int(1.3 * ntok(ref)) + 32),
         })
