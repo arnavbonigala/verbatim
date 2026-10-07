@@ -70,6 +70,8 @@ def init(corpus=b""):
         "verbatim": lambda: Verbatim(t, d, COST),
         "verbatim-noforms": lambda: Verbatim(t, d, COST, forms=False),
         "verbatim-b4": lambda: Verbatim(t, d, COST, branches=4),
+        "verbatim-k15": lambda: Verbatim(t, d, COST, k_max=15),
+        "verbatim-k31": lambda: Verbatim(t, d, COST, k_max=31),
         "suffix": lambda: SuffixDecoding(),
         "agspec-forms": lambda: Verbatim(t, d, COST, forms="agspec"),
         "suffix-global": lambda: SuffixDecoding(corpus_ids=corpus_ids),

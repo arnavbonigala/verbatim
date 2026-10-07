@@ -21,6 +21,7 @@ ap.add_argument("--configs", default="base,dflash5,fast5,fast8,fast12,fast16")
 ap.add_argument("--out", default="results/dflash_qwen3_8b.jsonl")
 ap.add_argument("--stock", action="store_true")
 ap.add_argument("--block", type=int, default=8)
+ap.add_argument("--copy-max", type=int, default=15)
 args = ap.parse_args()
 
 model, draft, tok = load_mlx_models(args.model, args.draft, 4)
@@ -41,7 +42,7 @@ from verbatim.drafter import Verbatim
 COSTS = {}
 for en in ((False,) if args.stock else (True, "strict")):
     mlx_fast.ENABLED, mlx_fast.STRICT = en is True, en == "strict"
-    COSTS[en] = [spec_mlx.verify_costs(model, ctx=c) for c in (512, 6000)]
+    COSTS[en] = [spec_mlx.verify_costs(model, ctx=c, widths=16 if en == "strict" else max(16, args.copy_max + 1)) for c in (512, 6000)]
     print("verify cost ms", en, [[round(x * 1000) for x in c[1:]] for c in COSTS[en]], flush=True)
 mlx_fast.STRICT = False
 
@@ -60,13 +61,15 @@ def run(cfg, ids):
     mlx_fast.STRICT = cfg in ("sbase", "sverb") or cfg.startswith(("strict", "sadapt"))
     out, t0 = [], None
     if cfg in ("verb", "sverb"):
-        copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=15)
-        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier)
+        cm = 15 if mlx_fast.STRICT else args.copy_max
+        copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=cm)
+        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm)
         return out, dt, len(steps)
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
         cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
-        copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=15) if cfg.endswith("c") else None
-        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block)
+        cm = 15 if mlx_fast.STRICT else args.copy_max
+        copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=cm) if cfg.endswith("c") else None
+        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block, copy_max=cm)
         return out, dt, len(steps)
     if cfg in ("base", "sbase"):
         gen = mlx_generate(model, tok, ids, max_tokens=args.max_tokens, sampler=make_sampler(0.0))
