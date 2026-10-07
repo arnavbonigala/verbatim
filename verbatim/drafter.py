@@ -33,6 +33,7 @@ class Verbatim:
         self.base, self.formed = b"", 0
         self.seen = np.array(ids, dtype=np.intc)
         self.last_draft = []
+        self.prev = None
         self._extend_forms()
 
     def _extend_forms(self):
@@ -65,37 +66,61 @@ class Verbatim:
         self.by_len.setdefault(self.last_bucket, []).append((d, a))
         self.last_draft = []
 
-    def expected_accepts(self, k, bucket):
-        recent = self.by_len.get(bucket, [])[-self.window:] + [(4, 4)]
-        return sum(min(k, 2 * d) if a >= d else min(a, k) for d, a in recent) / len(recent)
+    def expected_accepts(self, ks, bucket):
+        def est(xs):
+            d, a = np.array(xs + [(4, 4)]).T
+            return np.where(a >= d, np.minimum(ks[:, None], 2 * d), np.minimum(a, ks[:, None])).mean(1)
+        recent = [x for x in self.stats[-8:] if x]
+        return np.minimum(est(self.by_len.get(bucket, [])[-self.window:]), est(recent))
 
     def draft_len(self, n, bucket):
-        best, best_k = 1 / self.cost[1], 0
-        for k in range(1, min(n, self.k_max) + 1):
-            rate = (1 + self.expected_accepts(k, bucket)) / self.cost[k + 1]
-            if rate > best:
-                best, best_k = rate, k
-        return best_k
+        ks = np.arange(1, min(n, self.k_max) + 1)
+        if not len(ks):
+            return 0
+        rate = (1 + self.expected_accepts(ks, bucket)) / np.array(self.cost[2 : len(ks) + 2])
+        i = int(rate.argmax())
+        return int(ks[i]) if rate[i] > 1 / self.cost[1] else 0
 
     def match(self):
         hay = self.base + self.history
         end = len(hay) - 1
-        lo, hi = self.min_match, min(len(self.history), 4096)
-        pos = hay.rfind(hay[-lo:], 0, end) if lo <= hi else -1
-        if pos < 0:
-            return [], 0
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            p = hay.rfind(hay[-mid:], 0, end)
-            if p >= 0:
-                lo, pos = mid, p
+        cap = min(len(self.history), 4096)
+        if self.prev:
+            pos, lo, n = self.prev
+            grow = len(self.history) - n
+            if 0 <= grow and lo + grow <= cap and hay[pos + lo : pos + lo + grow] == self.history[n:] and SEP not in self.history[n:]:
+                lo += grow
             else:
-                hi = mid - 1
+                pos = -1
+        else:
+            pos = -1
+        if pos < 0:
+            lo = self.min_match
+            pos = hay.rfind(hay[-lo:], 0, end) if lo <= cap else -1
+            if pos < 0:
+                self.prev = None
+                return [], 0
+            hi = lo
+            while hi < cap:
+                hi = min(2 * hi, cap)
+                p = hay.rfind(hay[-hi:], 0, end)
+                if p < 0:
+                    hi -= 1
+                    break
+                lo, pos = hi, p
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                p = hay.rfind(hay[-mid:], 0, end)
+                if p >= 0:
+                    lo, pos = mid, p
+                else:
+                    hi = mid - 1
+        self.prev = (pos, lo, len(self.history))
         pat, conts, keys = hay[-lo:], [], set()
         for _ in range(32):
             start = pos + lo
-            stop = hay.find(SEP, start)
-            cont = hay[start:min(len(hay) if stop < 0 else stop, start + self.k_max * 8)]
+            stop = hay.find(SEP, start, start + self.k_max * 8)
+            cont = hay[start:stop if stop >= 0 else start + self.k_max * 8]
             if cont and cont[:16] not in keys:
                 keys.add(cont[:16])
                 conts.append(cont)
@@ -115,11 +140,17 @@ class Verbatim:
     def propose(self, input_ids):
         self._sync(np.asarray(input_ids))
         conts, length = self.match()
-        drafts = [d for d in map(self._tokens, conts) if d]
         self.last_draft = []
-        if not drafts:
+        if not conts:
             return []
         self.last_bucket = min(length.bit_length(), 12)
+        k = self.draft_len(self.k_max, self.last_bucket)
+        if k == 0:
+            return []
+        span = 2 * (k + 2) * len(self.history) // max(1, len(self.seen)) + 16
+        drafts = [d for d in (self._tokens(c[:span]) for c in conts) if d]
+        if not drafts:
+            return []
         k = self.draft_len(len(drafts[0]), self.last_bucket)
         if k == 0:
             return []
