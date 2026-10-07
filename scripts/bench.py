@@ -1,7 +1,6 @@
 import argparse, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
-from verbatim.llama_engine import Engine
 from verbatim.drafter import Verbatim
 
 ap = argparse.ArgumentParser()
@@ -12,13 +11,25 @@ ap.add_argument("--configs", default="none,pld,pld16,verbatim,verbatim-noforms,v
 ap.add_argument("--limit", type=int, default=0)
 ap.add_argument("--only", default="")
 ap.add_argument("--cooldown", type=float, default=2.0)
+ap.add_argument("--engine", default="llama", choices=["llama", "mlx"])
+ap.add_argument("--vocab", default="models/qwen2.5-coder-7b-instruct-q4_k_m.gguf")
+ap.add_argument("--draft", default="")
+ap.add_argument("--draft-len", type=int, default=4)
+ap.add_argument("--stock", action="store_true")
 args = ap.parse_args()
 
-e = Engine(args.model, n_ctx=12288)
-tag = os.path.basename(args.model).replace(".gguf", "")
+if args.engine == "mlx":
+    from verbatim.mlx_engine import Engine
+    e = Engine(args.model, args.vocab, args.draft or None, fast=not args.stock)
+    n_ctx = e.n_ctx()
+else:
+    from verbatim.llama_engine import Engine
+    e = Engine(args.model, n_ctx=12288)
+    n_ctx = e.llm.n_ctx()
+tag = os.path.basename(args.model.rstrip("/")).replace(".gguf", "") + ("-stock" if args.stock else "")
 cost = e.cost_profile(f"data/cost_{tag}.json")
 flat = [0.0] + [1.0] * 66
-shared = {"verbatim": {}, "verbatim-noforms": {}}
+shared = {"verbatim": {}, "verbatim-noforms": {}, "hybrid": {}}
 
 
 def make(name):
@@ -29,6 +40,8 @@ def make(name):
         "verbatim": lambda: Verbatim(e.tokenize, e.detokenize, cost, shared=shared["verbatim"]),
         "verbatim-noforms": lambda: Verbatim(e.tokenize, e.detokenize, cost, forms=False, shared=shared["verbatim-noforms"]),
         "verbatim-fixed": lambda: Verbatim(e.tokenize, e.detokenize, flat, k_max=31),
+        "draft": lambda: None,
+        "hybrid": lambda: Verbatim(e.tokenize, e.detokenize, cost, shared=shared["hybrid"]),
     }[name]()
 
 
@@ -50,10 +63,10 @@ for i, t in enumerate(turns):
             text, ref = text + ref[:cut], ref[cut:]
             break
     prompt = e.tokenize_prompt(text)
-    if len(prompt) > e.llm.n_ctx() - 256:
+    if len(prompt) > n_ctx - 256:
         print(f"[skip] {t['id']} prompt {len(prompt)} tokens does not fit", flush=True)
         continue
-    max_tokens = min(1024, int(1.3 * len(e.tokenize(ref.encode()))) + 32, e.llm.n_ctx() - len(prompt) - 70)
+    max_tokens = min(1024, int(1.3 * len(e.tokenize(ref.encode()))) + 32, n_ctx - len(prompt) - 70)
     e.cached = []
     ts = time.perf_counter()
     e.prefill(prompt)
@@ -62,7 +75,8 @@ for i, t in enumerate(turns):
     runs = {}
     for name in order:
         time.sleep(args.cooldown)
-        out, steps, dt = e.generate(prompt, make(name), max_tokens=max_tokens)
+        kw = {"model_draft": args.draft_len} if name in ("draft", "hybrid") else {}
+        out, steps, dt = e.generate(prompt, make(name), max_tokens=max_tokens, **kw)
         runs[name] = {"out": out, "steps": steps, "dt": dt}
     base = runs["none"]["out"] if "none" in runs else None
     for name, r in runs.items():
