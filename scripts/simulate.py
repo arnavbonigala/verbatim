@@ -61,10 +61,13 @@ def init():
     make = {
         "pld": lambda: LlamaPromptLookupDecoding(),
         "pld15": lambda: LlamaPromptLookupDecoding(num_pred_tokens=15),
+        "pld-max": lambda: LlamaPromptLookupDecoding(num_pred_tokens=64),
         "verbatim": lambda: Verbatim(t, d, COST),
         "verbatim-noforms": lambda: Verbatim(t, d, COST, forms=False),
         "verbatim-multi": lambda: Verbatim(t, d, COST, branches=3),
         "verbatim-max": lambda: Verbatim(t, d, None, k_max=64),
+        "verbatim-m4": lambda: Verbatim(t, d, COST, min_match=4),
+        "verbatim-max-m4": lambda: Verbatim(t, d, None, k_max=64, min_match=4),
     }
 
 
