@@ -16,6 +16,13 @@ class Engine:
         self.n_vocab = self.llm.n_vocab()
         self.cached = []
 
+    def render(self, messages):
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+        meta = self.llm.metadata
+        tid = lambda key: self.llm._model.token_get_text(int(meta[key])) if key in meta else ""
+        fmt = Jinja2ChatFormatter(meta["tokenizer.chat_template"], tid("tokenizer.ggml.eos_token_id"), tid("tokenizer.ggml.bos_token_id"))
+        return fmt(messages=messages).prompt
+
     def tokenize(self, b: bytes):
         return self.llm.tokenize(b, add_bos=False, special=False)
 
@@ -37,10 +44,12 @@ class Engine:
         self.prefill(prompt)
         cost = [0.0]
         for b in range(1, k_max + 2):
-            ts = time.perf_counter()
-            for _ in range(3):
+            runs = []
+            for _ in range(5):
+                ts = time.perf_counter()
                 self._decode(prompt[-b:], len(prompt) - b, True)
-            cost.append((time.perf_counter() - ts) / 3)
+                runs.append(time.perf_counter() - ts)
+            cost.append(sorted(runs)[2])
         self.cached = []
         os.makedirs(os.path.dirname(path), exist_ok=True)
         json.dump(cost, open(path, "w"))
@@ -75,14 +84,14 @@ class Engine:
             ts = time.perf_counter()
             self._decode([t] + draft, len(hist) - 1, True)
             a = 0
-            while a < len(draft):
+            while a < len(draft) and not llama_cpp.llama_vocab_is_eog(self.vocab, draft[a]):
                 p = self._argmax(a)
                 if p != draft[a]:
                     break
                 a += 1
             nxt = self._argmax(a)
             out.extend(draft[:a])
-            steps.append({"draft": len(draft), "accepted": a, "dt": time.perf_counter() - ts})
+            steps.append({"pos": len(out) - a - 1, "draft": len(draft), "accepted": a, "dt": time.perf_counter() - ts})
             t = nxt
         self.cached = prompt + out
         return out, steps, time.perf_counter() - t0
