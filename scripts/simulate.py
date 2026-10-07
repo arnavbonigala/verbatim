@@ -14,6 +14,7 @@ ap.add_argument("--out", default="results/sim.jsonl")
 ap.add_argument("--procs", type=int, default=7)
 ap.add_argument("--tok", default="models/qwen2.5-coder-7b-instruct-q4_k_m.gguf")
 ap.add_argument("--configs", default="")
+ap.add_argument("--corpus", type=int, default=0)
 ap.add_argument("--format", default="swesmith", choices=["swesmith", "openhands"])
 args = ap.parse_args()
 
@@ -49,11 +50,12 @@ def openhands_messages(traj):
     return out
 
 
-def init():
+def init(corpus=b""):
     global tok, COST, make
     from llama_cpp import Llama
     from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
     from verbatim.drafter import Verbatim
+    from verbatim.drafter_exp import Verbatim as VX
     llm = Llama(args.tok, vocab_only=True, verbose=False)
     tok = llm
     COST = json.load(open(args.cost))
@@ -65,6 +67,8 @@ def init():
         "pld-max": lambda: LlamaPromptLookupDecoding(num_pred_tokens=64),
         "verbatim": lambda: Verbatim(t, d, COST),
         "verbatim-noforms": lambda: Verbatim(t, d, COST, forms=False),
+        "verbatim-b4": lambda: Verbatim(t, d, COST, branches=4),
+        "verbatim-corpus": lambda: VX(t, d, COST, corpus=corpus),
         "verbatim-max": lambda: Verbatim(t, d, None, k_max=64),
     }
 
@@ -113,10 +117,13 @@ if __name__ == "__main__":
         rows = [{"traj_id": f"oh-{i:05d}", "messages": openhands_messages(r["trajectory"])} for i, r in enumerate(pq.read_table(args.shard, columns=["trajectory"]).to_pylist())]
     rows.sort(key=lambda r: r["traj_id"])
     random.Random(1).shuffle(rows)
-    rows = [r for r in rows if all(isinstance(m.get("content"), str) for m in r["messages"])][: args.trajs]
+    rows = [r for r in rows if all(isinstance(m.get("content"), str) for m in r["messages"])]
+    corpus = "\x00".join(m["content"] for r in rows[args.trajs : args.trajs + args.corpus] for m in r["messages"] if m["role"] == "assistant").encode()
+    print("corpus bytes", len(corpus), flush=True)
+    rows = rows[: args.trajs]
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     t0, n = time.time(), 0
-    with Pool(args.procs, initializer=init) as pool, open(args.out, "w") as f:
+    with Pool(args.procs, initializer=init, initargs=(corpus,)) as pool, open(args.out, "w") as f:
         for recs in pool.imap_unordered(run, rows):
             for r in recs:
                 f.write(json.dumps(r) + "\n")
