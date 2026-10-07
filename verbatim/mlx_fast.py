@@ -46,7 +46,7 @@ def _tune_attention(T=4096, H=28, kvh=4, D=128, dtype=mx.float16):
     return use
 
 
-def accelerate(model, profile_path=None, strict=False):
+def accelerate(model, profile_path=None, strict=False, free=False):
     shapes = {}
     for _, m in model.named_modules():
         if isinstance(m, nn.QuantizedLinear) and m.bits == 4 and m.group_size == 64 and m.weight.shape[0] % (8 * qmv.RT * qmv.SIMDS) == 0:
@@ -67,13 +67,23 @@ def accelerate(model, profile_path=None, strict=False):
         use = plan["linear"][f"{s[0]}x{s[1]}"]
         for m in ms:
             m._use = use
+            if free:
+                m._free = True
+                for k in ("weight", "scales", "biases"):
+                    m.pop(k)
+    if free:
+        mx.clear_cache()
     stock = nn.QuantizedLinear.__call__
 
     def linear(self, x):
         rows = x.size // x.shape[-1]
         use = getattr(self, "_use", None)
-        if use and rows <= MAX_M and (STRICT or (ENABLED and use[rows - 1])):
-            y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and STRICT else qmv.qmv(x, self._vb, self._sb)
+        own = getattr(self, "_free", False)
+        if use and rows <= MAX_M and (STRICT or own or (ENABLED and use[rows - 1])):
+            y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and (STRICT or own) else qmv.qmv(x, self._vb, self._sb)
+            return y + self.bias if "bias" in self else y
+        if own:
+            y = qmv.matmul_large(x, self._vb, self._sb)
             return y + self.bias if "bias" in self else y
         return stock(self, x)
 

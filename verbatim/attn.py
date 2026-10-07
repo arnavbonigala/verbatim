@@ -69,7 +69,6 @@ _kernel = mx.fast.metal_kernel(
     ensure_row_contiguous=False,
 )
 
-
 COMBINE = """
     uint i = thread_position_in_grid.x;
     int d = i % D;
@@ -95,13 +94,13 @@ _combine = mx.fast.metal_kernel(
     source=COMBINE,
 )
 
-
-def attention(q, k, v, scale, SG=4):
+def attention(q, k, v, scale, SG=4, BK=None):
     B, H, L, D = q.shape
     kvh, T = k.shape[1], k.shape[2]
     G = H // kvh
+    BK = BK or (64 if G <= 4 else 32)
     R = (G * L + 7) // 8 * 8
-    BK = 32
+
     NB = (T + BK - 1) // BK
     qg = q.reshape(kvh, G * L, D).astype(k.dtype)
     if R > G * L:
@@ -123,7 +122,6 @@ def attention(q, k, v, scale, SG=4):
         output_dtypes=[q.dtype],
     )[0]
     return out[:, : G * L].reshape(B, H, L, D)
-
 
 if __name__ == "__main__":
     import time

@@ -83,10 +83,12 @@ GEMV_SOURCE = """
     int base = (n / 8) * groups * 8 + n % 8;
     const device uint4* w = (const device uint4*)wq;
     const device half2* sbv = (const device half2*)sb;
-    threadgroup half xs[K];
-    for (int i = thread_position_in_threadgroup.x; i < K; i += threads_per_threadgroup.x)
-        xs[i] = (half)x[i];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup half xs[SHARED ? K : 1];
+    if (SHARED) {
+        for (int i = thread_position_in_threadgroup.x; i < K; i += threads_per_threadgroup.x)
+            xs[i] = (half)x[i];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     float acc = 0.0f;
     uint4 n0 = w[base * 2], n1 = w[base * 2 + 1];
     half2 sbn = sbv[base];
@@ -100,7 +102,7 @@ GEMV_SOURCE = """
         for (int k = 0; k < 64; k++) {
             int t = k / 8, f = (k % 8) / 2, j = k % 2;
             half h = fma((half)((ws[2 * f + t / 4] >> (4 * ((t % 4) + 4 * j))) & 15u), s, b);
-            acc = fma((float)h, (float)xs[g * 64 + k], acc);
+            acc = fma((float)h, (float)(SHARED ? xs[g * 64 + k] : (half)x[g * 64 + k]), acc);
         }
     }
     out[n] = (OT)acc;
@@ -114,12 +116,48 @@ def gemv(x, wq, sb, tg=128):
     N = wq.shape[0]
     return _gemv(
         inputs=[x, wq, sb],
-        template=[("K", K), ("OT", x.dtype)],
+        template=[("K", K), ("OT", x.dtype), ("SHARED", K <= 16384)],
         grid=(N, 1, 1),
         threadgroup=(tg, 1, 1),
         output_shapes=[(*lead, N)],
         output_dtypes=[x.dtype],
     )[0]
+
+
+DEQ_SOURCE = """
+    uint i = thread_position_in_grid.x;
+    int groups = K / 64;
+    int w = i % 8, fm = (i / 8) % 8, g = (i / 64) % groups, blk = i / (64 * groups);
+    int n = blk * 8 + fm - N0;
+    if (n < 0 || n >= NR) return;
+    half2 sbh = ((const device half2*)sb)[i / 8];
+    uint word = wq[i];
+    for (int q = 0; q < 8; q++) {
+        int k = 32 * (w % 2) + 8 * (q % 4) + 2 * (w / 2) + q / 4;
+        out[n * K + g * 64 + k] = (OT)fma((half)((word >> (4 * q)) & 15u), sbh.x, sbh.y);
+    }
+"""
+
+_deq = mx.fast.metal_kernel(name="verbatim_dequant", input_names=["wq", "sb"], output_names=["out"], source=DEQ_SOURCE)
+
+
+def dequant(wq, sb, n0, nr, dtype):
+    N, W = wq.shape
+    K = W * 8
+    start, stop = (n0 // 8) * 8 * W, ((n0 + nr + 7) // 8) * 8 * W
+    return _deq(
+        inputs=[wq.reshape(-1)[start:stop], sb.reshape(-1)[start // 8 : stop // 8]],
+        template=[("K", K), ("N0", n0 % 8), ("NR", nr), ("OT", dtype)],
+        grid=(stop - start, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(nr, K)],
+        output_dtypes=[dtype],
+    )[0]
+
+
+def matmul_large(x, wq, sb, chunk=16384):
+    N = wq.shape[0]
+    return mx.concatenate([x @ dequant(wq, sb, n0, min(chunk, N - n0), x.dtype).T for n0 in range(0, N, chunk)], axis=-1)
 
 
 def repack(wq):
