@@ -13,11 +13,11 @@ LABEL = {"none": "No speculation", "pld": "Prompt lookup (built-in)", "verbatim"
 COLOR = {"none": "#8a8f98", "pld": "#c58b2a", "pld16": "#d9b26b", "verbatim": "#2563eb", "verbatim-noforms": "#7aa2f7", "verbatim-fixed": "#1e3a8a"}
 
 
-def summarize(d):
-    recs = [json.load(open(f)) for f in sorted(glob.glob(f"{d}/*.json")) if not f.endswith("summary.json")]
+def summarize(spec):
+    recs = [json.load(open(f)) for d in spec.split("+") for f in sorted(glob.glob(f"{d}/*.json")) if not f.endswith("summary.json")]
     empty = [r["id"] for r in recs if not r["runs"]["none"]["out"]]
     if empty:
-        print(f"{d}: excluded {len(empty)} turn(s) with no generated tokens: {', '.join(empty)}")
+        print(f"{spec}: excluded {len(empty)} turn(s) with no generated tokens: {', '.join(empty)}")
     recs = [r for r in recs if r["runs"]["none"]["out"]]
     cfgs = [c for c in LABEL if c in recs[0]["runs"]]
     groups = defaultdict(list)
@@ -77,9 +77,10 @@ def chart(name, cfgs, table, path):
 
 if __name__ == "__main__":
     md = []
-    for d in sys.argv[1:]:
-        name = os.path.basename(d.rstrip("/"))
-        cfgs, table, per_turn, n = summarize(d)
+    for spec in sys.argv[1:]:
+        d = spec.split("+")[0].rstrip("/")
+        name = os.path.basename(d)
+        cfgs, table, per_turn, n = summarize(spec)
         json.dump({"table": table, "per_turn": per_turn}, open(f"{d}/summary.json", "w"), indent=1)
         chart(name, cfgs, table, f"{d}/speedup.png")
         md.append(markdown(name, cfgs, table, n))
