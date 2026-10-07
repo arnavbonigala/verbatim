@@ -13,6 +13,7 @@ ap.add_argument("--cost", default="data/cost_qwen2.5-coder-7b-instruct-q4_k_m.js
 ap.add_argument("--out", default="results/sim.jsonl")
 ap.add_argument("--procs", type=int, default=7)
 ap.add_argument("--tok", default="models/qwen2.5-coder-7b-instruct-q4_k_m.gguf")
+ap.add_argument("--configs", default="")
 ap.add_argument("--format", default="swesmith", choices=["swesmith", "openhands"])
 args = ap.parse_args()
 
@@ -75,7 +76,7 @@ def run(row):
     end = S("<|im_end|>\n")
     pieces = [S(f"<|im_start|>{m['role']}\n") + T(m["content"]) + end for m in msgs]
     head = S("<|im_start|>assistant\n")
-    drafters = {k: f() for k, f in make.items()}
+    drafters = {k: f() for k, f in make.items() if not args.configs or k in args.configs.split(",")}
     recs, ctx = [], []
     for i, m in enumerate(msgs):
         if m["role"] == "assistant" and i >= 2:
