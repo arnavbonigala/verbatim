@@ -14,7 +14,7 @@ ap.add_argument("--only", default="")
 ap.add_argument("--cooldown", type=float, default=2.0)
 args = ap.parse_args()
 
-e = Engine(args.model, n_ctx=8192)
+e = Engine(args.model, n_ctx=12288)
 tag = os.path.basename(args.model).replace(".gguf", "")
 cost = e.cost_profile(f"data/cost_{tag}.json")
 flat = [0.0] + [1.0] * 66
@@ -50,6 +50,9 @@ for i, t in enumerate(turns):
             text, ref = text + ref[:cut], ref[cut:]
             break
     prompt = e.tokenize_prompt(text)
+    if len(prompt) > e.llm.n_ctx() - 256:
+        print(f"[skip] {t['id']} prompt {len(prompt)} tokens does not fit", flush=True)
+        continue
     max_tokens = min(1024, int(1.3 * len(e.tokenize(ref.encode()))) + 32, e.llm.n_ctx() - len(prompt) - 70)
     e.cached = []
     ts = time.perf_counter()
