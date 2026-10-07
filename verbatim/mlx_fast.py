@@ -94,7 +94,7 @@ def accelerate(model, profile_path=None, strict=False, free=False):
     def attention(queries, keys, values, cache, scale, mask, sinks=None):
         L = queries.shape[2]
         if sinks is None and not hasattr(cache, "bits") and L <= MAX_M and (STRICT or (ENABLED and use_attn[L - 1] and keys.shape[2] >= 1024)):
-            return attn.attention(queries, keys, values, scale)
+            return attn.attention2(queries, keys, values, scale, BPT=8)
         return sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     import sys
