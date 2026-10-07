@@ -35,11 +35,12 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
         c.offset = offset
     tokens = [int(mx.argmax(logits[0, -1]).item())]
     steps = []
-    pred, got, skip, idle, copy_rate = 4.0, 4.0, 0, 0, 0.8
+    pred, got, skip, idle = 4.0, 4.0, 0, 0
     prompt_list = prompt.tolist()
     t0 = time.perf_counter()
     while len(tokens) < max_tokens and tokens[-1] not in eos:
-        if skip > 0:
+        c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:15] if copier is not None else []
+        if skip > 0 and not c:
             lt = model(mx.array([[tokens[-1]]]), target_cache)
             hidden = mx.concatenate([hidden, mx.concatenate(model._hidden_states, axis=-1)], axis=1)
             nxt = mx.argmax(lt[0, -1])
@@ -47,6 +48,22 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             tokens.append(int(nxt.item()))
             steps.append((0, 0, "plain"))
             skip -= 1
+            continue
+        if c:
+            k = min(len(c), max_tokens - len(tokens))
+            lt = model(mx.array([[tokens[-1]] + c[:k]]), target_cache)
+            new_h = mx.concatenate(model._hidden_states, axis=-1)
+            t_tok = mx.argmax(lt[0], axis=-1)
+            mx.eval(t_tok, new_h)
+            t_tok = t_tok.tolist()
+            a = next((i for i in range(k) if c[i] != t_tok[i]), k)
+            new = c[:a] + [t_tok[a]]
+            stop = next((i for i, t in enumerate(new) if t in eos), None)
+            tokens.extend(new[: stop + 1] if stop is not None else new)
+            steps.append((k, a, "copy-only"))
+            if k - a > 0:
+                _trim_recent_cache(target_cache, k - a)
+            hidden = mx.concatenate([hidden, new_h[:, : a + 1, :]], axis=1)
             continue
         block_in = mx.array([[tokens[-1]] + [mask_id] * (block - 1)])
         dl = draft(block_in, hidden, draft_cache, logits_start=1)
@@ -70,11 +87,6 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
                 skip, idle = backoff, 0
         else:
             k = block - 1
-        if copier is not None:
-            c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:15]
-            mine = (1 + (exp_acc[k] if adaptive and k_fixed is None else k)) / cost[k + 1]
-            if len(c) >= 4 and copier.last_bucket[1] >= 6 and (1 + copy_rate * len(c)) / cost[len(c) + 1] > mine:
-                d_tok, k, src = c, len(c), "copy"
         k = min(k, max_tokens - len(tokens))
         verify_in = mx.array([[tokens[-1]] + d_tok[:k]])
         lt = model(verify_in, target_cache)
@@ -94,9 +106,38 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             log.append((d_tok[:k], t_tok, a, top2.tolist(), mx.take_along_axis(probs, top2, axis=-1).tolist()))
         if adaptive and k_fixed is None and src == "dflash" and k > 0:
             pred, got = 0.95 * pred + exp_acc[k] / min(1.0, got / pred), 0.95 * got + a
-        if src == "copy":
-            copy_rate = 0.8 * copy_rate + 0.2 * a / k
         if k - a > 0:
             _trim_recent_cache(target_cache, k - a)
         hidden = hidden[:, : a + 1, :]
+    return tokens[:max_tokens], steps, time.perf_counter() - t0
+
+
+def generate_copy(model, prompt, max_tokens, eos, copier):
+    cache = make_prompt_cache(model)
+    prompt_list = list(prompt)
+    p = mx.array(prompt_list)
+    start = 0
+    while p.size - start > 1:
+        n = min(2048, p.size - start - 1)
+        model(p[None, start : start + n], cache=cache)
+        mx.eval([c.state for c in cache])
+        start += n
+    logits = model(p[None, start:], cache=cache)
+    tokens = [int(mx.argmax(logits[0, -1]).item())]
+    steps = []
+    t0 = time.perf_counter()
+    while len(tokens) < max_tokens and tokens[-1] not in eos:
+        c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:15]
+        k = min(len(c), max_tokens - len(tokens))
+        lt = model(mx.array([[tokens[-1]] + c[:k]]), cache=cache)
+        t_tok = mx.argmax(lt[0], axis=-1)
+        mx.eval(t_tok)
+        t_tok = t_tok.tolist()
+        a = next((i for i in range(k) if c[i] != t_tok[i]), k)
+        new = c[:a] + [t_tok[a]]
+        stop = next((i for i, t in enumerate(new) if t in eos), None)
+        tokens.extend(new[: stop + 1] if stop is not None else new)
+        steps.append((k, a, "copy" if k else "plain"))
+        if k - a > 0:
+            _trim_recent_cache(cache, k - a)
     return tokens[:max_tokens], steps, time.perf_counter() - t0

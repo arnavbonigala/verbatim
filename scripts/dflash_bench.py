@@ -57,8 +57,12 @@ db = lambda ids: tok._tokenizer.decode(ids).encode()
 
 def run(cfg, ids):
     mlx_fast.ENABLED = cfg.startswith("fast") or (cfg.startswith("adapt") and not cfg.endswith("stock"))
-    mlx_fast.STRICT = cfg == "sbase" or cfg.startswith(("strict", "sadapt"))
+    mlx_fast.STRICT = cfg in ("sbase", "sverb") or cfg.startswith(("strict", "sadapt"))
     out, t0 = [], None
+    if cfg in ("verb", "sverb"):
+        copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=15)
+        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier)
+        return out, dt, len(steps)
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
         cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
         copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=15) if cfg.endswith("c") else None
@@ -104,7 +108,7 @@ with open(args.out, "a") as fh:
                 out, dt, steps = run(cfg, ids)
                 res[cfg] = (out, dt, steps)
                 time.sleep(2)
-            ref = lambda c: res.get("sbase" if c == "sbase" or c.startswith(("strict", "sadapt")) else "base", (None,))[0]
+            ref = lambda c: res.get("sbase" if c in ("sbase", "sverb") or c.startswith(("strict", "sadapt")) else "base", (None,))[0]
             for cfg, (out, dt, steps) in res.items():
                 base = ref(cfg)
                 n_same = next((j for j in range(min(len(out), len(base or []))) if out[j] != base[j]), min(len(out), len(base or []))) if base else None
