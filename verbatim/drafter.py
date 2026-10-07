@@ -66,8 +66,8 @@ class Verbatim:
         self.last_draft = []
 
     def expected_accepts(self, k, bucket):
-        recent = self.by_len.get(bucket, [])[-self.window:] + [(0, 1)]
-        return sum(k if a >= d else min(a, k) for d, a in recent) / len(recent)
+        recent = self.by_len.get(bucket, [])[-self.window:] + [(4, 4)]
+        return sum(min(k, 2 * d) if a >= d else min(a, k) for d, a in recent) / len(recent)
 
     def draft_len(self, n, bucket):
         best, best_k = 1 / self.cost[1], 0
