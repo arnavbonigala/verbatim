@@ -5,3 +5,6 @@ __pycache__/
 PLAN.md
 PRD.*
 data/raw/
+.playwright-mcp/
+demo/data.js.bak
+.claude/
