@@ -19,10 +19,14 @@ ap.add_argument("--n", type=int, default=5)
 ap.add_argument("--max-tokens", type=int, default=256)
 ap.add_argument("--configs", default="base,dflash5,fast5,fast8,fast12,fast16")
 ap.add_argument("--out", default="results/dflash_qwen3_8b.jsonl")
+ap.add_argument("--stock", action="store_true")
+ap.add_argument("--block", type=int, default=8)
 args = ap.parse_args()
 
 model, draft, tok = load_mlx_models(args.model, args.draft, 4)
-mlx_fast.accelerate(model, "data/mlx_plan_mlx-qwen3-8b-4bit.json")
+if not args.stock:
+    mlx_fast.accelerate(model, "data/mlx_plan_mlx-qwen3-8b-4bit.json", free=True)
+    mlx_fast.accelerate(draft, "data/mlx_plan_dflash-qwen3-8b.json", free=True)
 
 
 def prompt_ids(text):
@@ -35,11 +39,17 @@ from verbatim import spec_mlx
 from verbatim.drafter import Verbatim
 
 COSTS = {}
-for en in (False, True, "strict"):
+for en in ((False,) if args.stock else (True, "strict")):
     mlx_fast.ENABLED, mlx_fast.STRICT = en is True, en == "strict"
-    COSTS[en] = spec_mlx.verify_costs(model)
+    COSTS[en] = [spec_mlx.verify_costs(model, ctx=c) for c in (512, 6000)]
+    print("verify cost ms", en, [[round(x * 1000) for x in c[1:]] for c in COSTS[en]], flush=True)
 mlx_fast.STRICT = False
-print("verify cost ms stock", [round(c * 1000) for c in COSTS[False][1:]], "fast", [round(c * 1000) for c in COSTS[True][1:]], flush=True)
+
+
+def costs_at(en, n):
+    a, b = COSTS[en]
+    f = min(max((n - 512) / (6000 - 512), 0.0), 1.5)
+    return [x + (y - x) * f for x, y in zip(a, b)]
 EOS = set(tok.eos_token_ids)
 tb = lambda b: tok._tokenizer.encode(b.decode("utf-8", "replace"), add_special_tokens=False)
 db = lambda ids: tok._tokenizer.decode(ids).encode()
@@ -50,9 +60,9 @@ def run(cfg, ids):
     mlx_fast.STRICT = cfg == "sbase" or cfg.startswith(("strict", "sadapt"))
     out, t0 = [], None
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
-        cost = COSTS["strict" if mlx_fast.STRICT else mlx_fast.ENABLED]
+        cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
         copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=15) if cfg.endswith("c") else None
-        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier)
+        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block)
         return out, dt, len(steps)
     if cfg in ("base", "sbase"):
         gen = mlx_generate(model, tok, ids, max_tokens=args.max_tokens, sampler=make_sampler(0.0))
@@ -98,7 +108,7 @@ with open(args.out, "a") as fh:
             for cfg, (out, dt, steps) in res.items():
                 base = ref(cfg)
                 n_same = next((j for j in range(min(len(out), len(base or []))) if out[j] != base[j]), min(len(out), len(base or []))) if base else None
-                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same}
+                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same, "out": out}
                 fh.write(json.dumps(rec) + "\n")
                 fh.flush()
             line = " ".join(f"{c}={len(o)/d:.1f}t/s({len(o)/max(1,s):.1f}/pass){'' if ref(c) is None or o == ref(c) else '!'}" for c, (o, d, s) in res.items())

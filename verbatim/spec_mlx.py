@@ -71,7 +71,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
         else:
             k = block - 1
         if copier is not None:
-            c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][: block - 1]
+            c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:15]
             mine = (1 + (exp_acc[k] if adaptive and k_fixed is None else k)) / cost[k + 1]
             if len(c) >= 4 and copier.last_bucket[1] >= 6 and (1 + copy_rate * len(c)) / cost[len(c) + 1] > mine:
                 d_tok, k, src = c, len(c), "copy"
