@@ -15,6 +15,10 @@ COLOR = {"none": "#8a8f98", "pld": "#c58b2a", "pld16": "#d9b26b", "verbatim": "#
 
 def summarize(d):
     recs = [json.load(open(f)) for f in sorted(glob.glob(f"{d}/*.json")) if not f.endswith("summary.json")]
+    empty = [r["id"] for r in recs if not r["runs"]["none"]["out"]]
+    if empty:
+        print(f"{d}: excluded {len(empty)} turn(s) with no generated tokens: {', '.join(empty)}")
+    recs = [r for r in recs if r["runs"]["none"]["out"]]
     cfgs = [c for c in LABEL if c in recs[0]["runs"]]
     groups = defaultdict(list)
     for r in recs:
