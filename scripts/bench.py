@@ -18,6 +18,7 @@ e = Engine(args.model, n_ctx=8192)
 tag = os.path.basename(args.model).replace(".gguf", "")
 cost = e.cost_profile(f"data/cost_{tag}.json")
 flat = [0.0] + [1.0] * 66
+shared = {"verbatim": {}, "verbatim-noforms": {}}
 
 
 def make(name):
@@ -25,8 +26,8 @@ def make(name):
         "none": lambda: None,
         "pld": lambda: LlamaPromptLookupDecoding(),
         "pld16": lambda: LlamaPromptLookupDecoding(num_pred_tokens=15),
-        "verbatim": lambda: Verbatim(e.tokenize, e.detokenize, cost),
-        "verbatim-noforms": lambda: Verbatim(e.tokenize, e.detokenize, cost, forms=False),
+        "verbatim": lambda: Verbatim(e.tokenize, e.detokenize, cost, shared=shared["verbatim"]),
+        "verbatim-noforms": lambda: Verbatim(e.tokenize, e.detokenize, cost, forms=False, shared=shared["verbatim-noforms"]),
         "verbatim-fixed": lambda: Verbatim(e.tokenize, e.detokenize, flat, k_max=31),
     }[name]()
 

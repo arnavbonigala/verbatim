@@ -19,14 +19,14 @@ def emission_forms(text: bytes) -> list[bytes]:
 
 
 class Verbatim:
-    def __init__(self, tokenize, detokenize, cost=None, min_match=12, k_max=64, window=16, forms=True, branches=1):
+    def __init__(self, tokenize, detokenize, cost=None, min_match=4, k_max=64, window=16, forms=True, branches=1, shared=None):
         self.tokenize, self.detokenize = tokenize, detokenize
         self.cost = cost or [0.0] + [1.0] * (k_max + 1)
         self.min_match, self.k_max, self.window = min_match, min(k_max, len(self.cost) - 2), window
         self.use_forms, self.branches = forms, branches
         self.seen = np.array([], dtype=np.intc)
         self.stats = []
-        self.by_len = {}
+        self.by_len = {} if shared is None else shared
 
     def _rebuild(self, ids):
         self.history = self.detokenize([int(t) for t in ids])
