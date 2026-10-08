@@ -24,6 +24,7 @@ ap.add_argument("--stock", action="store_true")
 ap.add_argument("--block", type=int, default=8)
 ap.add_argument("--copy-max", type=int, default=15)
 ap.add_argument("--draft-ctx", type=int, default=None)
+ap.add_argument("--repeat", type=int, default=1)
 args = ap.parse_args()
 
 model, draft, tok = load_mlx_models(args.model, args.draft, 4)
@@ -128,7 +129,7 @@ with open(args.out, "a") as fh:
             for cfg in order:
                 if (ds, i, cfg) in done:
                     continue
-                out, dt, steps = run(cfg, ids)
+                out, dt, steps = min((run(cfg, ids) for _ in range(args.repeat)), key=lambda r: r[1])
                 mx.clear_cache()
                 res[cfg] = (out, dt, steps)
                 time.sleep(2)
