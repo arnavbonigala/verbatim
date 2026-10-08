@@ -78,6 +78,10 @@ def init(corpus=b""):
         "verbatim-corpus": lambda: VX(t, d, COST, corpus=corpus),
         "verbatim-max": lambda: Verbatim(t, d, None, k_max=64),
     }
+    for q in (0.5, 0.6, 0.7, 0.8, 0.9):
+        make[f"mix-p{q}"] = lambda q=q: (q, Verbatim(t, d, COST, k_max=len(COST) - 2))
+        for b in (2, 4, 8):
+            make[f"tree-p{q}-b{b}"] = lambda q=q, b=b: ((1 - (1 - q) ** b, b), Verbatim(t, d, COST, k_max=len(COST) - 2))
 
 
 def run(row):
@@ -99,11 +103,19 @@ def run(row):
             rec = {"traj": row["traj_id"], "turn": i, "kind": kind(m["content"]), "ctx": len(prompt), "n": len(ref), "base_time": len(ref) * COST[1], "cfg": {}}
             for name, dr in drafters.items():
                 pos, passes, drafted, accepted, t_proj = len(prompt) + 1, 0, 0, 0, 0.0
+                q, dr = dr if isinstance(dr, tuple) else (None, dr)
+                q, br = q if isinstance(q, tuple) else (q, 1)
+                rng = random.Random(pos)
                 while pos < len(seq):
                     ds = dr.propose(seq[:pos]) if hasattr(dr, "propose") else [[int(x) for x in dr(seq[:pos])]]
                     actual = seq[pos:pos + 128].tolist()
                     a = max([accepted_prefix(d, actual) for d in ds] + [0])
                     n_draft = sum(len(d) for d in ds)
+                    if q is not None and n_draft == 0:
+                        depth = max(range((len(COST) - 2) // br + 1), key=lambda k: (1 + sum(q ** i for i in range(1, k + 1))) / COST[min(k * br + 1, len(COST) - 1)])
+                        a = next((i for i in range(depth) if rng.random() > q), depth)
+                        a = min(a, len(seq) - pos)
+                        n_draft = depth * br
                     passes += 1
                     drafted += n_draft
                     accepted += a
