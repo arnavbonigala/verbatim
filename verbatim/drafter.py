@@ -159,6 +159,7 @@ class Verbatim:
             return []
         drafts = drafts[: max(1, k // 8)]
         self.last_draft = [d[: k // len(drafts)] for d in drafts]
+        self.last_exp = float(self.expected_accepts(np.array([k]), self.last_bucket)[0])
         return self.last_draft
 
     def __call__(self, input_ids, /, **kwargs):

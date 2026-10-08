@@ -1,6 +1,7 @@
 import argparse, collections, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mlx.core as mx
+mx.set_cache_limit(1 << 29)
 from mlx_lm import stream_generate as mlx_generate
 from mlx_lm.sample_utils import make_sampler
 from dflash.model_mlx import stream_generate as dflash_generate
@@ -22,6 +23,7 @@ ap.add_argument("--out", default="results/dflash_qwen3_8b.jsonl")
 ap.add_argument("--stock", action="store_true")
 ap.add_argument("--block", type=int, default=8)
 ap.add_argument("--copy-max", type=int, default=15)
+ap.add_argument("--draft-ctx", type=int, default=None)
 args = ap.parse_args()
 
 model, draft, tok = load_mlx_models(args.model, args.draft, 4)
@@ -74,19 +76,19 @@ def summarize(cfg, steps):
 
 def run(cfg, ids):
     mlx_fast.ENABLED = cfg.startswith("fast") or (cfg.startswith("adapt") and not cfg.endswith("stock"))
-    mlx_fast.STRICT = cfg in ("sbase", "sverb") or cfg.startswith(("strict", "sadapt"))
+    mlx_fast.STRICT = cfg in ("sbase", "sverb", "sverbr") or cfg.startswith(("strict", "sadapt"))
     out, t0 = [], None
-    if cfg in ("verb", "sverb"):
+    if cfg in ("verb", "sverb", "sverbr"):
         cm = 15 if mlx_fast.STRICT else args.copy_max
         copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=cm)
-        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm)
+        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm, recycle=7 if cfg.endswith("r") else 0)
         summarize(cfg, steps)
         return out, dt, len(steps)
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
         cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
         cm = 15 if mlx_fast.STRICT else args.copy_max
         copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=cm) if cfg.endswith(("c", "cs")) else None
-        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block, copy_max=cm, seed=cfg.endswith("cs"))
+        out, steps, dt = spec_mlx.generate(model, draft, ids, args.max_tokens, cost, EOS, copier=copier, block=args.block, copy_max=cm, seed=cfg.endswith("cs"), warmup=8 if "w" in cfg else 0, draft_ctx=1024 if "d" in cfg[6:] else args.draft_ctx, recycle=7 if "r" in cfg[6:] else 0, arbitrate="x" in cfg[6:])
         summarize(cfg, steps)
         return out, dt, len(steps)
     if cfg in ("base", "sbase"):
@@ -127,9 +129,10 @@ with open(args.out, "a") as fh:
                 if (ds, i, cfg) in done:
                     continue
                 out, dt, steps = run(cfg, ids)
+                mx.clear_cache()
                 res[cfg] = (out, dt, steps)
                 time.sleep(2)
-            ref = lambda c: res.get("sbase" if c in ("sbase", "sverb") or c.startswith(("strict", "sadapt")) else "base", (None,))[0]
+            ref = lambda c: res.get("sbase" if c in ("sbase", "sverb", "sverbr") or c.startswith(("strict", "sadapt")) else "base", (None,))[0]
             for cfg, (out, dt, steps) in res.items():
                 base = ref(cfg)
                 n_same = next((j for j in range(min(len(out), len(base or []))) if out[j] != base[j]), min(len(out), len(base or []))) if base else None
