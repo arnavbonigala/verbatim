@@ -9,6 +9,7 @@ import mlx_lm.models.base as base
 from verbatim import attn, qmv
 
 MAX_M = 16
+STRICT_M = 16
 ENABLED = True
 STRICT = False
 
@@ -79,7 +80,7 @@ def accelerate(model, profile_path=None, strict=False, free=False):
         rows = x.size // x.shape[-1]
         use = getattr(self, "_use", None)
         own = getattr(self, "_free", False)
-        if use and rows <= MAX_M and (STRICT or own or (ENABLED and use[rows - 1])):
+        if use and (rows <= STRICT_M if STRICT else rows <= MAX_M) and (STRICT or own or (ENABLED and use[rows - 1])):
             y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and (STRICT or own) else qmv.qmv(x, self._vb, self._sb)
             return y + self.bias if "bias" in self else y
         if own:
@@ -93,8 +94,11 @@ def accelerate(model, profile_path=None, strict=False, free=False):
 
     def attention(queries, keys, values, cache, scale, mask, sinks=None):
         L = queries.shape[2]
-        if sinks is None and not hasattr(cache, "bits") and L <= MAX_M and (STRICT or (ENABLED and use_attn[L - 1] and keys.shape[2] >= 1024)):
-            return attn.attention2(queries, keys, values, scale, BPT=8)
+        if sinks is None and not hasattr(cache, "bits") and (L <= STRICT_M if STRICT else L <= MAX_M) and (STRICT or (ENABLED and use_attn[L - 1] and keys.shape[2] >= 1024)):
+            if L <= 16:
+                return attn.attention2(queries, keys, values, scale, BPT=8)
+            T = keys.shape[2]
+            return mx.concatenate([attn.attention2(queries[:, :, i : i + 16], keys[:, :, : T - L + min(L, i + 16)], values[:, :, : T - L + min(L, i + 16)], scale, BPT=8) for i in range(0, L, 16)], axis=2)
         return sdpa(queries, keys, values, cache, scale, mask, sinks)
 
     import sys
