@@ -50,6 +50,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
     since_probe, primed, misses = 0, False, 0
     prompt_list = prompt.tolist()
     succ = dict(zip(prompt_list, prompt_list[1:])) if recycle else {}
+    rs, rn = 1.0, 2.0
     t0 = time.perf_counter()
     while len(tokens) < max_tokens and tokens[-1] not in eos:
         c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:copy_max] if copier is not None else []
@@ -64,8 +65,8 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
                 since_probe = 0
         rc = []
         if recycle and skip > 0 and not c:
-            x = tokens[-1]
-            while len(rc) < recycle and x in succ:
+            x, n = tokens[-1], _rlen(rs / rn, cost, recycle)
+            while len(rc) < n and x in succ:
                 x = succ[x]
                 rc.append(x)
         if skip > 0 and not c and not rc:
@@ -99,6 +100,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             steps.append((k, a, src))
             if rc:
                 skip -= 1
+                rs, rn = 0.95 * rs + a, 0.95 * rn + min(a + 1, k)
                 thr["plain"] = 0.8 * thr["plain"] + 0.2 * (a + 1) / (time.perf_counter() - ts)
             if k - a > 0:
                 _trim_recent_cache(target_cache, k - a)
@@ -175,13 +177,17 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
     return tokens[:max_tokens], steps, dt
 
 
+def _rlen(q, cost, n):
+    return max(range(n + 1), key=lambda k: (1 + sum(q ** i for i in range(1, k + 1))) / cost[k + 1])
+
+
 def _rewind(cache, n):
     k = cache[0].offset - n
     if k > 0:
         _trim_recent_cache(cache, k)
 
 
-def generate_copy(model, prompt, max_tokens, eos, copier, copy_max=15, recycle=0, state=None):
+def generate_copy(model, prompt, max_tokens, eos, copier, copy_max=15, recycle=0, state=None, cost=None):
     cache = state.get("cache") or make_prompt_cache(model) if state is not None else make_prompt_cache(model)
     prompt_list = list(prompt)
     p = mx.array(prompt_list)
@@ -196,13 +202,14 @@ def generate_copy(model, prompt, max_tokens, eos, copier, copy_max=15, recycle=0
     tokens = [int(mx.argmax(logits[0, -1]).item())]
     steps = []
     succ = dict(zip(prompt_list, prompt_list[1:])) if recycle else {}
+    rs, rn = 1.0, 2.0
     t0 = time.perf_counter()
     while len(tokens) < max_tokens and tokens[-1] not in eos:
         c = [int(x) for x in copier(np.array(prompt_list + tokens, dtype=np.intc))][:copy_max]
         src = "copy" if c else "plain"
         if recycle and not c:
-            x = tokens[-1]
-            while len(c) < recycle and x in succ:
+            x, n = tokens[-1], _rlen(rs / rn, cost, recycle) if cost else recycle
+            while len(c) < n and x in succ:
                 x = succ[x]
                 c.append(x)
             src = "recycle" if c else "plain"
@@ -219,6 +226,8 @@ def generate_copy(model, prompt, max_tokens, eos, copier, copy_max=15, recycle=0
         stop = next((i for i, t in enumerate(new) if t in eos), None)
         tokens.extend(new[: stop + 1] if stop is not None else new)
         steps.append((k, a, src))
+        if src == "recycle":
+            rs, rn = 0.95 * rs + a, 0.95 * rn + min(a + 1, k)
         if k - a > 0:
             _trim_recent_cache(cache, k - a)
     dt = time.perf_counter() - t0

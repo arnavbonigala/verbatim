@@ -81,8 +81,9 @@ def run(cfg, ids):
     out, t0 = [], None
     if cfg in ("verb", "sverb", "sverbr"):
         cm = 15 if mlx_fast.STRICT else args.copy_max
-        copier = Verbatim(tb, db, costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids)) + [9.9] * 64, k_max=cm)
-        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm, recycle=7 if cfg.endswith("r") else 0)
+        cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
+        copier = Verbatim(tb, db, cost + [9.9] * 64, k_max=cm)
+        out, steps, dt = spec_mlx.generate_copy(model, ids, args.max_tokens, EOS, copier, copy_max=cm, recycle=7 if cfg.endswith("r") else 0, cost=cost)
         summarize(cfg, steps)
         return out, dt, len(steps)
     if cfg.startswith("adapt") or cfg.startswith("sadapt"):
