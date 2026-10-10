@@ -80,7 +80,7 @@ const speed = t => t.runs[M].n / t.runs[M].dt / (t.runs.base.n / t.runs.base.dt)
 let anim = null;
 const turn = () => D.turns[+$("turn").value];
 function render(out, stats, bar, run, t) {
-  const p = run.pieces, s0 = run.steps.length ? run.steps[0][0] : p.length;
+  const p = run.pieces, s0 = t > 0 ? (run.steps.length ? run.steps[0][0] : p.length) : 0;
   let el = 0, n = s0, html = esc(p.slice(0, s0).join(""));
   for (const [pos, k, a, src, dt] of run.steps) {
     if (el + dt > t) break;
