@@ -12,6 +12,7 @@ MAX_M = 16
 STRICT_M = 16
 ENABLED = True
 STRICT = False
+SPLIT = True
 
 
 def _time(f, n=8):
@@ -47,7 +48,7 @@ def _tune_attention(T=4096, H=28, kvh=4, D=128, dtype=mx.float16):
     return use
 
 
-def accelerate(model, profile_path=None, strict=False, free=False):
+def accelerate(model, profile_path=None, strict=False, free=False, pipeline=4):
     shapes = {}
     for _, m in model.named_modules():
         if isinstance(m, nn.QuantizedLinear) and m.bits == 4 and m.group_size == 64 and m.weight.shape[0] % (8 * qmv.RT * qmv.SIMDS) == 0:
@@ -81,7 +82,10 @@ def accelerate(model, profile_path=None, strict=False, free=False):
         use = getattr(self, "_use", None)
         own = getattr(self, "_free", False)
         if use and (rows <= STRICT_M if STRICT else rows <= MAX_M) and (STRICT or own or (ENABLED and use[rows - 1])):
-            y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and (STRICT or own) else qmv.qmv(x, self._vb, self._sb)
+            if STRICT and SPLIT:
+                y = qmv.gemv_split(x, self._vb, self._sb) if rows == 1 else qmv.qmv_split(x, self._vb, self._sb)
+            else:
+                y = qmv.gemv(x, self._vb, self._sb) if rows == 1 and (STRICT or own) else qmv.qmv(x, self._vb, self._sb)
             return y + self.bias if "bias" in self else y
         if own:
             y = qmv.matmul_large(x, self._vb, self._sb)
@@ -101,6 +105,19 @@ def accelerate(model, profile_path=None, strict=False, free=False):
             return mx.concatenate([attn.attention2(queries[:, :, i : i + 16], keys[:, :, : T - L + min(L, i + 16)], values[:, :, : T - L + min(L, i + 16)], scale, BPT=8) for i in range(0, L, 16)], axis=2)
         return sdpa(queries, keys, values, cache, scale, mask, sinks)
 
+    for i, layer in enumerate(getattr(model, "layers", [])):
+        layer._pipe = pipeline and i % pipeline == pipeline - 1
+        cls = type(layer)
+        if "_orig_call" not in cls.__dict__:
+            cls._orig_call = cls.__call__
+
+            def call(self, *a, _f=cls._orig_call, **k):
+                y = _f(self, *a, **k)
+                if getattr(self, "_pipe", False):
+                    mx.async_eval(y)
+                return y
+
+            cls.__call__ = call
     import sys
     for name, mod in list(sys.modules.items()):
         if name.startswith("mlx_lm.models.") and getattr(mod, "scaled_dot_product_attention", None) is sdpa:

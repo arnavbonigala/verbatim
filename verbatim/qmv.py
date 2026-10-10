@@ -244,3 +244,140 @@ if __name__ == "__main__":
             t_new = bench(lambda: qmv(x, wq, sbp))
             gb = N * K / 2 / 1e9
             print(f"N={N} K={K} M={M} err={err:.1e} batch_invariant={inv} mlx={t_ref*1e6:.0f}us new={t_new*1e6:.0f}us ({gb/t_new:.0f} GB/s)")
+
+
+SPLIT_SOURCE = """
+    uint lane = thread_index_in_simdgroup;
+    uint sg = simdgroup_index_in_threadgroup;
+    int row0 = threadgroup_position_in_grid.x * 8;
+    short qid = lane / 4;
+    short fm = (qid & 4) + ((lane / 2) % 4);
+    short fn = (qid & 2) * 2 + (lane % 2) * 2;
+    int groups = K / 64;
+    int per = groups / S;
+    const device uint2* wv = (const device uint2*)wq;
+    const device half2* sbv = (const device half2*)sb;
+    threadgroup float part[S * MT * 64];
+    simdgroup_matrix<float, 8, 8> C[MT];
+    for (int mt = 0; mt < MT; mt++)
+        C[mt] = simdgroup_matrix<float, 8, 8>(0);
+    int base = (row0 / 8) * groups * 8 + fm;
+    int g0 = sg * per;
+    uint2 wn = wv[(base + g0 * 8) * 4 + fn / 2];
+    half2 sbn = sbv[base + g0 * 8];
+    for (int g = g0; g < g0 + per; g++) {
+        uint2 wr = wn;
+        half2 s = half2(sbn.x), b = half2(sbn.y);
+        if (g + 1 < g0 + per) {
+            int i = base + (g + 1) * 8;
+            wn = wv[i * 4 + fn / 2];
+            sbn = sbv[i];
+        }
+        for (int t = 0; t < 8; t++) {
+            int k0 = g * 64 + t * 8;
+            uint pair = ((wr[t >> 2] >> ((t & 3) * 4)) & 0x000F000Fu) | 0x64006400u;
+            half2 h = fma(as_type<half2>(pair) - half2(1024.0h), s, b);
+            simdgroup_matrix<half, 8, 8> A;
+            A.thread_elements()[0] = h.x;
+            A.thread_elements()[1] = h.y;
+            for (int mt = 0; mt < MT; mt++) {
+                int m = mt * 8 + fn;
+                half v0 = (half)x[min(m, M - 1) * K + k0 + fm];
+                half v1 = (half)x[min(m + 1, M - 1) * K + k0 + fm];
+                simdgroup_matrix<half, 8, 8> B;
+                B.thread_elements()[0] = m < M ? v0 : 0.0h;
+                B.thread_elements()[1] = m + 1 < M ? v1 : 0.0h;
+                simdgroup_multiply_accumulate(C[mt], A, B, C[mt]);
+            }
+        }
+    }
+    for (int mt = 0; mt < MT; mt++) {
+        part[(sg * MT + mt) * 64 + fm * 8 + fn] = C[mt].thread_elements()[0];
+        part[(sg * MT + mt) * 64 + fm * 8 + fn + 1] = C[mt].thread_elements()[1];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (int i = sg * 32 + lane; i < MT * 64; i += S * 32) {
+        int mt = i / 64, e = i % 64;
+        float acc = part[mt * 64 + e];
+        for (int j = 1; j < S; j++)
+            acc += part[(j * MT + mt) * 64 + e];
+        int m = mt * 8 + e % 8, n = row0 + e / 8;
+        if (m < M) out[m * N + n] = (OT)acc;
+    }
+"""
+
+_split = mx.fast.metal_kernel(
+    name="verbatim_qmv_split",
+    input_names=["x", "wq", "sb"],
+    output_names=["out"],
+    source=SPLIT_SOURCE,
+    header="#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+)
+
+SPLIT_S = 8
+
+
+def qmv_split(x, wq, sb, S=SPLIT_S):
+    *lead, K = x.shape
+    M, N = x.size // K, wq.shape[0]
+    return _split(
+        inputs=[x, wq, sb],
+        template=[("MT", (M + 7) // 8), ("M", M), ("K", K), ("N", N), ("S", S), ("OT", x.dtype)],
+        grid=(N // 8 * S * 32, 1, 1),
+        threadgroup=(S * 32, 1, 1),
+        output_shapes=[(*lead, N)],
+        output_dtypes=[x.dtype],
+    )[0]
+
+
+GEMV_SPLIT_SOURCE = """
+    int t = thread_position_in_threadgroup.x;
+    int r = t % R, sl = t / R;
+    int n = threadgroup_position_in_grid.x * R + r;
+    int groups = K / 64;
+    int per = groups / S;
+    int base = (n / 8) * groups * 8 + n % 8;
+    const device uint4* w = (const device uint4*)wq;
+    const device half2* sbv = (const device half2*)sb;
+    threadgroup float part[S * R];
+    float acc = 0.0f;
+    int g0 = sl * per;
+    uint4 n0 = w[(base + g0 * 8) * 2], n1 = w[(base + g0 * 8) * 2 + 1];
+    half2 sbn = sbv[base + g0 * 8];
+    for (int g = g0; g < g0 + per; g++) {
+        uint ws[8] = {n0.x, n0.y, n0.z, n0.w, n1.x, n1.y, n1.z, n1.w};
+        half s = sbn.x, b = sbn.y;
+        if (g + 1 < g0 + per) {
+            int i = base + (g + 1) * 8;
+            n0 = w[i * 2]; n1 = w[i * 2 + 1]; sbn = sbv[i];
+        }
+        for (int k = 0; k < 64; k++) {
+            int tt = k / 8, f = (k % 8) / 2, j = k % 2;
+            half h = fma((half)((ws[2 * f + tt / 4] >> (4 * ((tt % 4) + 4 * j))) & 15u), s, b);
+            acc = fma((float)h, (float)(half)x[g * 64 + k], acc);
+        }
+    }
+    part[sl * R + r] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sl == 0) {
+        float tot = part[r];
+        for (int j = 1; j < S; j++)
+            tot += part[j * R + r];
+        out[n] = (OT)tot;
+    }
+"""
+
+_gemv_split = mx.fast.metal_kernel(name="verbatim_gemv_split", input_names=["x", "wq", "sb"], output_names=["out"], source=GEMV_SPLIT_SOURCE)
+
+
+def gemv_split(x, wq, sb, S=SPLIT_S, R=32):
+    *lead, K = x.shape
+    N = wq.shape[0]
+    return _gemv_split(
+        inputs=[x, wq, sb],
+        template=[("K", K), ("S", S), ("R", R), ("OT", x.dtype)],
+        grid=(N * S, 1, 1),
+        threadgroup=(R * S, 1, 1),
+        output_shapes=[(*lead, N)],
+        output_dtypes=[x.dtype],
+    )[0]
