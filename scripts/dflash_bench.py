@@ -66,19 +66,21 @@ db = lambda ids: tok._tokenizer.decode(ids).encode()
 
 
 STEPS = {}
+TRACE = {}
 
 
 def summarize(cfg, steps):
     by = collections.defaultdict(lambda: [0, 0, 0])
-    for k, a, src in steps:
+    for k, a, src, _ in steps:
         by[src][0] += 1; by[src][1] += a + 1; by[src][2] += k
     STEPS[cfg] = {s: {"steps": n, "tokens": t, "drafted": d} for s, (n, t, d) in by.items()}
+    TRACE[cfg] = [[k, a, src, t] for k, a, src, t in steps]
 
 
 def run(cfg, ids):
     mlx_fast.ENABLED = cfg.startswith("fast") or (cfg.startswith("adapt") and not cfg.endswith("stock"))
     mlx_fast.STRICT = cfg in ("sbase", "sverb", "sverbr") or cfg.startswith(("strict", "sadapt"))
-    out, t0 = [], None
+    out, t0, ts = [], None, []
     if cfg in ("verb", "sverb", "sverbr"):
         cm = 15 if mlx_fast.STRICT else args.copy_max
         cost = costs_at("strict" if mlx_fast.STRICT else mlx_fast.ENABLED, len(ids))
@@ -99,7 +101,9 @@ def run(cfg, ids):
             if t0 is None:
                 t0 = time.perf_counter()
             out.append(r.token)
+            ts.append(time.perf_counter())
         steps = len(out)
+        TRACE[cfg] = [[0, 0, "plain", t] for t in ts]
     else:
         bs = int(cfg.replace("dflash", "").replace("fast", "").replace("strict", ""))
         steps = 0
@@ -138,7 +142,7 @@ with open(args.out, "a") as fh:
             for cfg, (out, dt, steps) in res.items():
                 base = ref(cfg)
                 n_same = next((j for j in range(min(len(out), len(base or []))) if out[j] != base[j]), min(len(out), len(base or []))) if base else None
-                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same, "out": out, "sources": STEPS.pop(cfg, None)}
+                rec = {"dataset": ds, "i": i, "cfg": cfg, "prompt_tokens": len(ids), "n": len(out), "dt": dt, "steps": steps, "identical": base is not None and out == base, "agree_prefix": n_same, "out": out, "sources": STEPS.pop(cfg, None), "trace": TRACE.pop(cfg, None)}
                 fh.write(json.dumps(rec) + "\n")
                 fh.flush()
             line = " ".join(f"{c}={len(o)/d:.1f}t/s({len(o)/max(1,s):.1f}/pass){'' if ref(c) is None or o == ref(c) else '!'}" for c, (o, d, s) in res.items())

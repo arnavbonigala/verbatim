@@ -77,7 +77,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             mx.eval(nxt, hs[-1])
             succ[tokens[-1]] = int(nxt.item())
             tokens.append(int(nxt.item()))
-            steps.append((0, 0, "plain"))
+            steps.append((0, 0, "plain", time.perf_counter()))
             thr["plain"] = 0.8 * thr["plain"] + 0.2 / (time.perf_counter() - ts)
             skip -= 1
             continue
@@ -97,7 +97,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
             new = c[:a] + [t_tok[a]]
             stop = next((i for i, t in enumerate(new) if t in eos), None)
             tokens.extend(new[: stop + 1] if stop is not None else new)
-            steps.append((k, a, src))
+            steps.append((k, a, src, time.perf_counter()))
             if rc:
                 skip -= 1
                 rs, rn = 0.95 * rs + a, 0.95 * rn + min(a + 1, k)
@@ -156,7 +156,7 @@ def generate(model, draft, prompt, max_tokens, cost, eos, block=16, adaptive=Tru
         if stop is not None:
             new = new[: stop + 1]
         tokens.extend(new)
-        steps.append((k, a, src))
+        steps.append((k, a, src, time.perf_counter()))
         if log is not None:
             top2 = mx.argpartition(-probs, 1, axis=-1)[:, :2]
             log.append((d_tok[:k], t_tok, a, top2.tolist(), mx.take_along_axis(probs, top2, axis=-1).tolist()))
@@ -225,7 +225,7 @@ def generate_copy(model, prompt, max_tokens, eos, copier, copy_max=15, recycle=0
         new = c[:a] + [t_tok[a]]
         stop = next((i for i, t in enumerate(new) if t in eos), None)
         tokens.extend(new[: stop + 1] if stop is not None else new)
-        steps.append((k, a, src))
+        steps.append((k, a, src, time.perf_counter()))
         if src == "recycle":
             rs, rn = 0.95 * rs + a, 0.95 * rn + min(a + 1, k)
         if k - a > 0:
