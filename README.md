@@ -1,54 +1,71 @@
 # Verbatim
 
-Lossless speculative decoding for AI agents.
+Lossless decode acceleration for AI coding agents.
 
-Coding agents spend much of their output re-typing text they have already seen: the `old_str` of an edit copied from a file view, the unchanged lines of a replacement block, a file rewritten with one function changed, a command re-run after a failure, file contents JSON-escaped into a tool call. Verbatim indexes the agent's session and drafts those spans for the target model, which verifies the whole draft in one forward pass. Greedy output is token-for-token identical to normal decoding. The model just writes faster.
+Verbatim makes a language model write faster without changing a single output token. It drafts the tokens the model is about to write, from the agent's own session and from a learned drafter, sizes every draft against a measured cost model of the hardware, and has the target model verify the whole draft in one forward pass. In strict mode its kernels make speculative output bit-identical to plain decoding, checked by direct comparison on every prompt.
 
-<!-- RESULTS -->
+## Results
+
+Qwen3-8B 4-bit, MacBook Air M3 (16 GB, fanless), MLX. Speedup over stock MLX decoding, pooled over 20 prompts:
+
+| Workload | Verbatim (strict, bit-identical) | Stock DFlash on MLX |
+|---|---|---|
+| HumanEval (code) | **2.54x** | 1.67x |
+| GSM8K (math) | **1.73x** | 1.50x |
+| MT-Bench (chat) | 1.02x | 0.94x |
+| All | **1.47x** | 1.28x |
+
+Strict outputs: **20 of 20 bit-identical** to plain decoding with the same kernels.
+
+Agent sessions, replayed against the real reference outputs of 10 OpenHands trajectories (SWE-rebench). Tokens accepted per verify pass, which drives speedup on hardware where verification is nearly free:
+
+| Drafter | All turns | `str_replace` edits |
+|---|---|---|
+| **Verbatim copy drafter** | **2.34** | **4.63** |
+| SuffixDecoding (single-path port) | 2.17 | 3.79 |
+| AgSpec emission forms | 2.31 | 4.18 |
+| Prompt lookup decoding | 2.08 | 2.93 |
+| Verbatim copy drafter + held-out corpus | 2.66 | 4.82 |
+
+On llama.cpp with Gemma 4 12B, 30 real SWE-bench agent turns: 1.34x overall and 2.20x on edit turns, 30 of 30 outputs identical, where prompt lookup decoding ran at 0.86x.
 
 ## How it works
 
 ```
-session tokens ──► text history ──► emission forms ──► longest suffix match ──► continuation text
-                                                                                      │
-draft token IDs ◄── boundary-safe retokenization ◄── cost-aware draft length ◄────────┘
-       │
-       ▼
-target model verifies [last token + draft] in one batch, keeps the longest agreeing prefix
+session ──► copy drafter ─────────┐
+                                  ├──► controller ──► target verifies [last + draft] ──► keep agreeing prefix
+target hidden ──► learned drafter ┘    (measured cost model)
 ```
 
-1. **Session index.** Every token the session has seen (system prompt, issue, tool output, the model's own earlier turns) is kept as bytes. A draft request finds the longest suffix of the current output that occurs earlier in the session, using a binary search over match length with `bytes.rfind`.
-2. **Emission forms.** Agents rarely copy text in the form they read it. A `cat -n` view carries line numbers, a diff prefixes every line with `+`, `-` or a space, a JSON tool call escapes every newline and quote, and a moved block is re-indented. As complete lines arrive, Verbatim also indexes each line-numbers-stripped, diff-prefixed, JSON-escaped and re-indented rendering, so a copy can be found in whichever form the model is writing.
-3. **Text to tokens.** Matching happens on text, then the continuation is retokenized together with the last two generated tokens. If the joint tokenization reproduces those tokens, the remainder is exactly what the model would emit at that position; the final token is dropped because it may be cut mid-word. This handles the token-boundary mismatch that breaks naive token-level copying.
-4. **Cost-aware adaptive length.** Verify cost on a GPU is not linear in draft length. On Apple Metal a 2 to 8 token batch costs nearly one forward pass per token, while 10 to 32 tokens cost a flat ~4 to 6 passes. Verbatim keeps a per-batch-size cost table (profiled once, then updated online from measured timings) and online acceptance statistics bucketed by match length, and picks the draft length that maximizes expected tokens per second. A 300-byte match in a file copy drafts 31 tokens; a 12-byte coincidence in prose drafts nothing.
-5. **Engine-agnostic core.** `verbatim/drafter.py` depends only on a `tokenize` and `detokenize` function. Its `__call__(input_ids)` matches llama-cpp-python's `LlamaDraftModel` signature, and `propose(input_ids)` returns one or more candidate drafts. `verbatim/llama_engine.py` is the only engine-specific code: a greedy verify loop on llama.cpp's low-level batch API.
+1. **Exact kernels.** Batch-invariant Metal kernels for the 4-bit matmul and grouped-query attention compute every row the same way whether the model processes 1 token or 16, so a speculative verify pass and a plain decode step agree bit for bit. Apple's GPU matrix multiply accumulates as sequential fp32 multiply-adds in k order (1.28M of 1.28M probed elements), so a scalar single-row kernel walking K in order reproduces the batched kernel exactly while running at plain-decode speed. Strict mode costs about 21% on single-token steps, below published deterministic modes (34% for SGLang, 61% for batch-invariant kernels from Thinking Machines).
+2. **Fast verify.** A tile-major 4-bit weight layout, fused input handling and a 64-key attention block make an 8-token verify at 6k context cost 103 ms against 193 ms for stock MLX, while one copy of the weights lives in memory (6 GB active for an 8B model).
+3. **Copy drafter.** Agents spend much of their output re-typing text they have read. The drafter indexes the session as bytes, plus each line's line-number-stripped, diff-prefixed, JSON-escaped and re-indented forms, finds the longest suffix match, and retokenizes the continuation across the token boundary so the draft is exactly what the model would emit.
+4. **Learned drafter.** For text with nothing to copy, DFlash's block-diffusion drafter proposes a block of tokens from the target's hidden states.
+5. **Controller.** Each step takes the copy draft when one exists, otherwise a learned draft when its measured throughput beats plain decoding, otherwise a plain step. Verify width comes from a cost table measured at short and long context.
 
 ## Equivalence
 
-Greedy speculative decoding must emit exactly the tokens the target would have emitted alone. The benchmark checks this on every turn by comparing every generated token ID against a no-speculation run of the same prompt. The harness earned its keep during development: it caught an engine bug where a copied end-of-turn token was accepted and generation continued past it.
+Greedy speculative decoding must emit exactly the tokens the target would have emitted alone. The benchmarks compare every generated token ID against a plain run of the same prompt. Strict mode extends this to bit-identity under the same kernels: the batched verify pass and the single-token step share one reduction order.
 
 ## Reproduce
 
-Hardware used: MacBook Air M3, 16 GB, macOS 26.6, llama-cpp-python 0.3.36 with Metal.
+Hardware used: MacBook Air M3, 16 GB, macOS 26.6.
 
 ```bash
-uv venv --python 3.12 .venv
-CMAKE_ARGS="-DGGML_METAL=on -DLLAMA_OPENSSL=OFF" uv pip install --python .venv/bin/python llama-cpp-python huggingface_hub pyarrow matplotlib
-.venv/bin/hf download google/gemma-4-12B-it-qat-q4_0-gguf gemma-4-12b-it-qat-q4_0.gguf --local-dir models
-.venv/bin/hf download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF qwen2.5-coder-7b-instruct-q4_k_m.gguf --local-dir models
-.venv/bin/hf download SWE-bench/SWE-smith-trajectories data/tool-00004-of-00008.parquet --repo-type dataset --local-dir ds
+uv venv --python 3.12 .venv-dflash
+uv pip install --python .venv-dflash/bin/python mlx mlx-lm dflash pyarrow
+.venv-dflash/bin/hf download mlx-community/Qwen3-8B-4bit --local-dir models/mlx-qwen3-8b-4bit
+.venv-dflash/bin/hf download z-lab/Qwen3-8B-DFlash-b16 --local-dir models/dflash-qwen3-8b
 
-.venv/bin/python tests/test_drafter.py
-.venv/bin/python scripts/build_workload.py ds/data/tool-00004-of-00008.parquet
-.venv/bin/python scripts/bench.py --model models/gemma-4-12b-it-qat-q4_0.gguf --configs none,pld,verbatim,verbatim-noforms --out results/gemma4_12b
-.venv/bin/python scripts/report.py results/gemma4_12b
-.venv/bin/python scripts/simulate.py ds/data/tool-00004-of-00008.parquet --trajs 120 --out results/sim_q4km.jsonl
-.venv/bin/python scripts/sim_report.py results/sim_q4km.jsonl
-.venv/bin/python scripts/build_demo.py models/gemma-4-12b-it-qat-q4_0.gguf results/gemma4_12b results/qwen7b_q4km
-cd demo && python -m http.server
+.venv-dflash/bin/python verbatim/qmv.py
+.venv-dflash/bin/python verbatim/attn.py
+.venv-dflash/bin/python scripts/dflash_bench.py --stock --configs base --out results/stock.jsonl
+.venv-dflash/bin/python scripts/dflash_bench.py --configs sbase,sadapt,sadaptc --out results/verbatim.jsonl
+.venv-dflash/bin/python scripts/simulate.py ds/nebius/rg0_400.parquet --format openhands --trajs 10 --procs 1 \
+    --configs verbatim,suffix,agspec-forms,pld --cost data/cost_h100_roofline.json --out results/sim.jsonl
 ```
 
-On an Intel Homebrew machine, an x86 OpenSSL can leak into the arm64 build; `-DLLAMA_OPENSSL=OFF` avoids it.
+The llama.cpp path (`scripts/bench.py`, `verbatim/llama_engine.py`) reproduces the Gemma 4 12B agent-turn results.
 
 ## Data
 
@@ -57,4 +74,4 @@ On an Intel Homebrew machine, an x86 OpenSSL can leak into the arm64 build; `-DL
 
 ## Next milestone
 
-This is a proof of concept on llama.cpp on a laptop. The drafter is engine-agnostic: the vLLM and SGLang integration replaces only `llama_engine.py` with a proposer that hands `propose()` drafts to the engine's speculative verifier. Batch-invariant verification kernels on NVIDIA GPUs, which make batched and single-token logits bit-identical, are the other half of the production story. Both need GPU resources.
+About 36% of agent output tokens appear nowhere in the context, which caps every copy-based drafter near 2.8 tokens per pass on these traces. The next step is a learned drafter fine-tuned on long agent trajectories to cover that share, then a head-to-head on an H100 against SuffixDecoding, AgSpec, EAGLE-3 and DFlash on the same agent sessions.
