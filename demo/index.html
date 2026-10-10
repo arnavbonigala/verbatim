@@ -8,19 +8,19 @@
 :root {
   --bg: #f7f7f5; --panel: #ffffff; --ink: #1b1d21; --muted: #5b616b; --line: #e2e3e0;
   --copy-bg: #dbe7ff; --copy-ink: #12306e; --gen-ink: #1b1d21; --accent: #1d4ed8; --warn: #9a5b00;
-  --ok: #166534; --bad: #b42318; --bar-base: #8a8f98; --bar-pld: #b7791f; --bar-vb: #1d4ed8; --bar-vb2: #6b8fe8;
+  --ok: #166534; --bad: #b42318; --bar-base: #8a8f98; --bar-pld: #b7791f; --bar-vb: #1d4ed8; --bar-vb2: #6b8fe8; --draft-bg: #fde7c4;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #111215; --panel: #191b1f; --ink: #e8e9eb; --muted: #a2a7b0; --line: #2b2e34;
     --copy-bg: #1d3266; --copy-ink: #d6e2ff; --gen-ink: #e8e9eb; --accent: #8fb0ff; --warn: #f0b45a;
-    --ok: #6ee7a0; --bad: #ff8a80; --bar-base: #8a8f98; --bar-pld: #d9a441; --bar-vb: #6f97ff; --bar-vb2: #a9c0ff;
+    --ok: #6ee7a0; --bad: #ff8a80; --bar-base: #8a8f98; --bar-pld: #d9a441; --bar-vb: #6f97ff; --bar-vb2: #a9c0ff; --draft-bg: #4d3714;
   }
 }
 :root[data-theme="dark"] {
   --bg: #111215; --panel: #191b1f; --ink: #e8e9eb; --muted: #a2a7b0; --line: #2b2e34;
   --copy-bg: #1d3266; --copy-ink: #d6e2ff; --gen-ink: #e8e9eb; --accent: #8fb0ff; --warn: #f0b45a;
-  --ok: #6ee7a0; --bad: #ff8a80; --bar-base: #8a8f98; --bar-pld: #d9a441; --bar-vb: #6f97ff; --bar-vb2: #a9c0ff;
+  --ok: #6ee7a0; --bad: #ff8a80; --bar-base: #8a8f98; --bar-pld: #d9a441; --bar-vb: #6f97ff; --bar-vb2: #a9c0ff; --draft-bg: #4d3714;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -47,6 +47,7 @@ button.primary { background: var(--accent); color: var(--bg); border-color: var(
 .stats strong { color: var(--ink); }
 .out { margin: 0; padding: 12px 14px; height: 420px; overflow: auto; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-word; color: var(--gen-ink); }
 .out .c { background: var(--copy-bg); color: var(--copy-ink); border-radius: 2px; }
+.out .d { background: var(--draft-bg); color: var(--ink); border-radius: 2px; }
 .legend { display: flex; gap: 16px; font-size: 13px; color: var(--muted); margin: 8px 0 0; flex-wrap: wrap; }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; border: 1px solid var(--line); }
 .progress { height: 3px; background: var(--line); }
@@ -63,101 +64,94 @@ th { color: var(--muted); font-weight: 600; }
 svg text { fill: var(--ink); font-size: 11px; }
 svg .axis { stroke: var(--line); }
 .chart svg { max-height: 300px; }
-.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.chart { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 </style>
 </head>
 <body>
 <main>
   <h1>Verbatim</h1>
-  <p class="lede">Lossless speculative decoding for AI agents. Verbatim drafts long spans copied from the agent's own session (file views, diffs, JSON-escaped tool arguments), and the target model verifies each draft in one forward pass. Output is token-for-token identical to normal greedy decoding. Every number on this page was measured on a MacBook Air M3 with llama.cpp and Metal.</p>
+  <p class="lede">Lossless decode acceleration for AI coding agents. Verbatim drafts the text an agent is about to re-type from its own session (file views, diffs, escaped tool arguments), fills the gaps with a learned drafter, and has the model verify each draft in one forward pass. Every turn below was recorded on a fanless MacBook Air M3 (16 GB) running Qwen3-8B 4-bit on MLX, replaying real SWE-bench agent sessions.</p>
   <div class="kpis" id="kpis"></div>
 
   <h2>Side-by-side replay</h2>
   <div class="controls">
-    <label>Model <select id="model"></select></label>
     <label>Agent turn <select id="turn"></select></label>
-    <label>Compare against <select id="other"></select></label>
+    <label>Verbatim mode <select id="mode"></select></label>
     <button class="primary" id="play">Play</button>
     <button id="reset">Reset</button>
   </div>
   <div class="panes">
-    <section class="pane" aria-label="Baseline decoding">
-      <header><h3 id="lhead">No speculation</h3><div class="stats" id="lstats"></div></header>
+    <section class="pane" aria-label="Stock MLX decoding">
+      <header><h3>Stock MLX</h3><div class="stats" id="lstats"></div></header>
       <div class="progress"><i id="lbar"></i></div>
       <pre class="out" id="lout" tabindex="0" aria-live="off"></pre>
     </section>
     <section class="pane" aria-label="Verbatim decoding">
-      <header><h3>Verbatim</h3><div class="stats" id="rstats"></div></header>
+      <header><h3 id="rhead">Verbatim</h3><div class="stats" id="rstats"></div></header>
       <div class="progress"><i id="rbar"></i></div>
       <pre class="out" id="rout" tabindex="0" aria-live="off"></pre>
     </section>
   </div>
-  <div class="legend"><span><i class="sw" style="background:var(--copy-bg)"></i>Copied: drafted from session, accepted by the model</span><span><i class="sw" style="background:var(--panel)"></i>Generated by the model one token at a time</span></div>
-  <p class="note">Playback uses the per-pass wall-clock timings recorded during the benchmark run, so both panes progress at the speed they actually decoded.</p>
+  <div class="legend"><span><i class="sw" style="background:var(--copy-bg)"></i>Copied from the session, verified by the model</span><span><i class="sw" style="background:var(--draft-bg)"></i>Proposed by the learned drafter or recycled, verified by the model</span><span><i class="sw" style="background:var(--panel)"></i>Generated one token at a time</span></div>
+  <p class="note">Playback runs on the per-pass wall-clock timestamps recorded during the benchmark, so each pane moves at the speed it actually decoded.</p>
 
   <h2>Equivalence</h2>
   <div id="equiv"></div>
 
-  <h2>Measured end-to-end decode speed</h2>
+  <h2>Measured decode speed</h2>
   <div class="chart" id="chart"></div>
   <div class="scroll" style="margin-top:12px"><table id="table"></table></div>
-
-  <h2>Replay of real Claude 3.7 Sonnet sessions</h2>
-  <p class="note">Speculative decoding with greedy verification always emits the target's own tokens, so the number of tokens accepted per verify pass depends only on the drafter and the target's output. Replaying real agent sessions through each drafter gives exact accepted-token counts; time is projected from the verify-cost curve measured on this laptop.</p>
-  <div class="scroll" style="margin-top:12px"><table id="sim"></table></div>
 </main>
 <script src="data.js"></script>
 <script>
 const D = window.VERBATIM;
-const LABEL = {none: "No speculation", pld: "Prompt lookup (built-in)", pld16: "Prompt lookup, 15 tokens", pld15: "Prompt lookup, 15 tokens", verbatim: "Verbatim", "verbatim-noforms": "Verbatim, no emission forms", "verbatim-fixed": "Verbatim, fixed length", "verbatim-multi": "Verbatim, 3 branches", "verbatim-max": "Verbatim, unlimited draft"};
+const LABEL = {base: "Stock MLX", sbase: "Verbatim kernels, no drafting", sadaptrdwc: "Verbatim", sverbr: "Verbatim, copy and recycle only"};
+const MODES = ["sadaptrdwc", "sverbr"].filter(c => D.summary.all.cfg[c]);
+const KIND = {str_replace: "File edits", after_obs: "After tool output", reasoning: "Reasoning", tool_call: "Tool calls", create: "New files", all: "All turns"};
+const kn = k => KIND[k] || k.replace(/_/g, " ");
 const $ = id => document.getElementById(id);
 const fmt = (x, d = 1) => Number(x).toFixed(d);
-const models = Object.keys(D.runs).filter(m => D.runs[m].length);
-
+const tps = x => x.tokens / x.time;
+const sp = (a, c) => tps(a.cfg[c]) / tps(a.cfg.base);
+function esc(s) { return s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]); }
+function fill(sel, items, label) { sel.innerHTML = items.map(x => `<option value="${x}">${label(x)}</option>`).join(""); }
 function kpis() {
-  const m = models[0], s = D.summaries[m];
-  if (!s) return;
-  const t = s.table, all = t.all.cfg, ed = (t.str_replace || t.all).cfg;
-  const n = t.all.turns;
+  const S = D.summary, a = S.all, m = MODES[0];
+  const best = Object.keys(S).filter(k => k !== "all").sort((x, y) => sp(S[y], m) - sp(S[x], m))[0];
+  const top = D.turns.map(t => t.runs[m].n / t.runs[m].dt / (t.runs.base.n / t.runs.base.dt)).sort((x, y) => y - x)[0];
   const items = [
-    [fmt(ed.verbatim.speedup, 2) + "x", "Verbatim decode speedup on edit turns, " + m],
-    [fmt(all.verbatim.speedup, 2) + "x", "Across all " + n + " agent turns, " + m],
-    [fmt(ed.verbatim.tokens_per_pass, 1), "Tokens per verify pass on edit turns"],
-    [all.verbatim.identical + " of " + n, "Turns token-for-token identical to plain greedy decoding"],
+    [fmt(sp(a, m), 2) + "x", `Faster than stock MLX across all ${a.turns} agent turns`],
+    [fmt(sp(S[best], m), 2) + "x", `On ${kn(best).toLowerCase()} turns, up to ${fmt(top, 1)}x on a single turn`],
+    [fmt(a.cfg[m].tokens / a.cfg[m].passes, 2), "Tokens per model forward pass (stock: 1.00)"],
+    [`${a.cfg[m].identical} of ${a.turns}`, "Outputs bit-identical to plain decoding"],
   ];
   $("kpis").innerHTML = items.map(([b, s]) => `<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join("");
 }
-
-function fill(sel, items, label = x => x) { sel.innerHTML = items.map(x => `<option value="${x}">${label(x)}</option>`).join(""); }
-
 let anim = null;
-function turn() { return D.runs[$("model").value].find(t => t.id === $("turn").value); }
-
-function render(paneOut, stats, bar, run, pieces, t) {
-  let el = 0, ntok = 0, passes = 0, acc = 0, html = "";
-  for (const [pos, draft, a, dt] of run.steps) {
+const turn = () => D.turns[+$("turn").value];
+function render(out, stats, bar, run, t) {
+  const p = run.pieces, s0 = run.steps.length ? run.steps[0][0] : p.length;
+  let el = 0, n = s0, passes = 0, html = esc(p.slice(0, s0).join(""));
+  for (const [pos, k, a, src, dt] of run.steps) {
     if (el + dt > t) break;
-    el += dt; passes++; acc += a;
-    html += esc(pieces[pos] || "");
-    if (a) html += `<span class="c">${esc(pieces.slice(pos + 1, pos + 1 + a).join(""))}</span>`;
-    ntok = pos + 1 + a;
+    el += dt; passes++;
+    if (a) html += `<span class="${src === "copy-only" ? "c" : "d"}">${esc(p.slice(pos, pos + a).join(""))}</span>`;
+    html += esc(p.slice(pos + a, pos + a + 1).join(""));
+    n = Math.min(p.length, pos + a + 1);
   }
-  paneOut.innerHTML = html;
-  paneOut.scrollTop = paneOut.scrollHeight;
-  bar.style.width = (100 * ntok / Math.max(1, pieces.length)) + "%";
-  stats.innerHTML = `<span><strong>${fmt(Math.min(t, run.dt), 1)}</strong> s</span><span><strong>${ntok}</strong> tokens</span><span><strong>${el ? fmt(ntok / el, 1) : "0.0"}</strong> tok/s</span><span><strong>${passes ? fmt(ntok / passes, 2) : "0.00"}</strong> tok/pass</span>`;
-  return ntok >= pieces.length;
+  out.innerHTML = html;
+  out.scrollTop = out.scrollHeight;
+  bar.style.width = (100 * n / Math.max(1, p.length)) + "%";
+  stats.innerHTML = `<span><strong>${fmt(Math.min(t, run.dt), 1)}</strong> s</span><span><strong>${n}</strong> tokens</span><span><strong>${el ? fmt(n / el, 1) : "0.0"}</strong> tok/s</span><span><strong>${passes ? fmt(n / (passes + (s0 > 0)), 2) : "0.00"}</strong> tok/pass</span>`;
+  return n >= p.length;
 }
-function esc(s) { return s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]); }
-
 function draw(t) {
-  const tr = turn(), other = $("other").value;
-  $("lhead").textContent = LABEL[other];
-  const a = render($("lout"), $("lstats"), $("lbar"), tr.runs[other], tr.pieces, t);
-  const b = render($("rout"), $("rstats"), $("rbar"), tr.runs.verbatim, tr.pieces, t);
+  const tr = turn(), m = $("mode").value;
+  $("rhead").textContent = LABEL[m];
+  const a = render($("lout"), $("lstats"), $("lbar"), tr.runs.base, t);
+  const b = render($("rout"), $("rstats"), $("rbar"), tr.runs[m], t);
   return a && b;
 }
-
 function play() {
   cancelAnimationFrame(anim);
   const t0 = performance.now();
@@ -165,66 +159,41 @@ function play() {
   step();
 }
 function reset() { cancelAnimationFrame(anim); draw(0); }
-
-function onModel() {
-  const turns = D.runs[$("model").value];
-  fill($("turn"), turns.map(t => t.id), id => { const t = turns.find(x => x.id === id); return `${id} (${t.runs.none.n} tokens)`; });
-  const t = turns.find(x => x.kind === "str_replace" && x.runs.none.n > 150) || turns[0];
-  $("turn").value = t.id;
-  fill($("other"), Object.keys(turns[0].runs).filter(c => c !== "verbatim"), c => LABEL[c]);
-  equiv(); table(); reset();
-}
-
 function equiv() {
-  const turns = D.runs[$("model").value];
-  const cfgs = Object.keys(turns[0].runs).filter(c => c !== "none");
-  $("equiv").innerHTML = cfgs.map(c => {
-    const ok = turns.filter(t => t.runs[c].identical).length;
-    return `<p><strong class="${ok === turns.length ? "ok" : "bad"}">${ok} of ${turns.length}</strong> turns identical: ${LABEL[c]} vs no speculation</p>
-      <div class="chips">${turns.map(t => `<span class="chip ${t.runs[c].identical ? "ok" : "bad"}" title="${t.id}">${t.runs[c].identical ? "✓" : "✗"} ${t.id}</span>`).join("")}</div>`;
-  }).join("") + `<p class="note">Greedy decoding with and without speculation, every generated token ID compared.</p>`;
+  $("equiv").innerHTML = MODES.map(c => {
+    const ok = D.turns.filter(t => t.runs[c].identical).length;
+    return `<p><strong class="${ok === D.turns.length ? "ok" : "bad"}">${ok} of ${D.turns.length}</strong> turns bit-identical: ${LABEL[c]} vs plain decoding</p>
+      <div class="chips">${D.turns.map(t => `<span class="chip ${t.runs[c].identical ? "ok" : "bad"}">${t.runs[c].identical ? "✓" : "✗"} ${t.id}</span>`).join("")}</div>`;
+  }).join("") + `<p class="note">Each speculative run is compared token ID by token ID against a plain one-token-at-a-time run with the same kernels. Verbatim's batch-invariant kernels make the verify pass and the single-token step share one reduction order, so speculation never changes a bit of the output.</p>`;
 }
-
 function table() {
-  const s = D.summaries[$("model").value];
-  if (!s) { $("table").innerHTML = ""; $("chart").innerHTML = ""; return; }
-  const t = s.table, kinds = ["all", ...Object.keys(t).filter(k => k !== "all").sort()];
-  const cfgs = Object.keys(t.all.cfg);
-  $("table").innerHTML = `<thead><tr><th>Turn kind</th><th>Turns</th><th>Tokens</th>${cfgs.map(c => `<th>${LABEL[c]}</th>`).join("")}</tr></thead><tbody>` +
-    kinds.map(k => `<tr><td>${k}</td><td>${t[k].turns}</td><td>${t[k].tokens}</td>${cfgs.map(c => { const x = t[k].cfg[c]; return `<td>${fmt(x.tok_s)} tok/s · <strong>${fmt(x.speedup, 2)}x</strong> · ${fmt(x.tokens_per_pass, 2)}/pass</td>`; }).join("")}</tr>`).join("") + "</tbody>";
-  const W = Math.max(340, Math.min(760, $("chart").clientWidth - 24)), H = 240, pad = 34, colors = {none: "var(--bar-base)", pld: "var(--bar-pld)", pld16: "var(--bar-pld)", verbatim: "var(--bar-vb)", "verbatim-noforms": "var(--bar-vb2)", "verbatim-fixed": "var(--bar-vb2)"};
-  const max = Math.max(1.5, ...kinds.flatMap(k => cfgs.map(c => t[k].cfg[c].speedup))) * 1.12;
-  const gw = (W - pad) / kinds.length, bw = gw * 0.8 / cfgs.length;
+  const S = D.summary, kinds = ["all", ...Object.keys(S).filter(k => k !== "all").sort((x, y) => sp(S[y], MODES[0]) - sp(S[x], MODES[0]))];
+  const cfgs = ["base", ...MODES];
+  $("table").innerHTML = `<thead><tr><th>Turn kind</th><th>Turns</th>${cfgs.map(c => `<th>${LABEL[c]}</th>`).join("")}</tr></thead><tbody>` +
+    kinds.map(k => `<tr><td>${kn(k)}</td><td>${S[k].turns}</td>${cfgs.map(c => { const x = S[k].cfg[c]; return `<td>${fmt(tps(x))} tok/s${c === "base" ? "" : ` · <strong>${fmt(sp(S[k], c), 2)}x</strong> · ${fmt(x.tokens / x.passes, 2)}/pass`}</td>`; }).join("")}</tr>`).join("") + "</tbody>";
+  const W = Math.max(560, Math.min(760, $("chart").clientWidth - 24)), H = 240, pad = 34, colors = {sadaptrdwc: "var(--bar-vb)", sverbr: "var(--bar-vb2)"};
+  const max = Math.max(1.5, ...kinds.flatMap(k => MODES.map(c => sp(S[k], c)))) * 1.12;
+  const gw = (W - pad) / kinds.length, bw = gw * 0.8 / MODES.length;
   const y = v => H - 22 - (H - 40) * v / max;
-  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Decode speedup by turn kind" style="width:100%;height:auto">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Speedup over stock MLX by turn kind" style="width:100%;min-width:560px;height:auto">`;
   svg += `<line class="axis" x1="${pad}" x2="${W}" y1="${y(1)}" y2="${y(1)}" stroke-dasharray="4 3"/><text x="2" y="${y(1) + 4}">1.0x</text>`;
   kinds.forEach((k, i) => {
-    cfgs.forEach((c, j) => {
-      const v = t[k].cfg[c].speedup, x = pad + i * gw + gw * 0.1 + j * bw;
-      svg += `<rect x="${x}" y="${y(v)}" width="${bw - 2}" height="${y(0) - y(v)}" fill="${colors[c]}" rx="2"><title>${LABEL[c]} ${k}: ${fmt(v, 2)}x</title></rect><text x="${x + bw / 2 - 1}" y="${y(v) - 4}" text-anchor="middle">${fmt(v, 2)}</text>`;
+    MODES.forEach((c, j) => {
+      const v = sp(S[k], c), x = pad + i * gw + gw * 0.1 + j * bw;
+      svg += `<rect x="${x}" y="${y(v)}" width="${bw - 2}" height="${y(0) - y(v)}" fill="${colors[c]}" rx="2"><title>${LABEL[c]}, ${kn(k)}: ${fmt(v, 2)}x</title></rect><text x="${x + bw / 2 - 1}" y="${y(v) - 4}" text-anchor="middle">${fmt(v, 2)}</text>`;
     });
-    svg += `<text x="${pad + i * gw + gw / 2}" y="${H - 6}" text-anchor="middle">${k}</text>`;
+    svg += `<text x="${pad + i * gw + gw / 2}" y="${H - 6}" text-anchor="middle">${kn(k)}</text>`;
   });
-  svg += "</svg>";
-  $("chart").innerHTML = svg + `<div class="legend">${cfgs.map(c => `<span><i class="sw" style="background:${colors[c]}"></i>${LABEL[c]}</span>`).join("")}</div>`;
+  $("chart").innerHTML = svg + "</svg>" + `<div class="legend">${MODES.map(c => `<span><i class="sw" style="background:${colors[c]}"></i>${LABEL[c]}, speedup over stock MLX</span>`).join("")}</div>`;
 }
-
-function sim() {
-  const rows = [];
-  for (const [name, agg] of Object.entries(D.sim)) {
-    const cfgs = Object.keys(agg.all.cfg);
-    rows.push(`<thead><tr><th>${name}</th><th>Turns</th><th>Tokens</th>${cfgs.map(c => `<th>${LABEL[c] || c}</th>`).join("")}</tr></thead>`);
-    const kinds = Object.keys(agg).sort((a, b) => agg[b].tokens - agg[a].tokens);
-    rows.push("<tbody>" + kinds.map(k => `<tr><td>${k}</td><td>${agg[k].turns}</td><td>${agg[k].tokens}</td>${cfgs.map(c => { const x = agg[k].cfg[c]; return `<td>${fmt(agg[k].tokens / x.passes, 2)}/pass · <strong>${fmt(agg[k].base / x.time, 2)}x</strong></td>`; }).join("")}</tr>`).join("") + "</tbody>");
-  }
-  $("sim").innerHTML = rows.join("");
-}
-
-fill($("model"), models);
-$("model").onchange = onModel; $("turn").onchange = reset; $("other").onchange = reset;
+const best = D.turns.reduce((b, t, i) => t.runs[MODES[0]].n / t.runs[MODES[0]].dt / (t.runs.base.n / t.runs.base.dt) > b[1] && t.runs.base.n > 100 ? [i, t.runs[MODES[0]].n / t.runs[MODES[0]].dt / (t.runs.base.n / t.runs.base.dt)] : b, [0, 0])[0];
+fill($("turn"), D.turns.map((_, i) => i), i => `${kn(D.turns[i].kind)}: ${D.turns[i].id} (${D.turns[i].runs.base.n} tokens)`);
+fill($("mode"), MODES, c => LABEL[c]);
+$("turn").value = best;
+$("turn").onchange = reset; $("mode").onchange = reset;
 $("play").onclick = play; $("reset").onclick = reset;
-kpis(); onModel(); sim();
-addEventListener("resize", () => table());
+kpis(); equiv(); table(); reset();
+addEventListener("resize", table);
 </script>
 </body>
 </html>

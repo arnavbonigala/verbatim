@@ -1,46 +1,59 @@
-import glob
+import collections
 import json
 import os
 import sys
 
-from llama_cpp import Llama
+from transformers import AutoTokenizer
 
-model, results = sys.argv[1], sys.argv[2:]
-tok = Llama(model, vocab_only=True, verbose=False)
-piece = lambda t: tok.detokenize([t]).decode("utf-8", "replace")
+stock_f, verb_f = sys.argv[1:3]
+tok = AutoTokenizer.from_pretrained("models/mlx-qwen3-8b-4bit")
+work = {}
+for i, w in enumerate((lambda w: w[:: max(1, len(w) // 12)][:12])([json.loads(l) for l in open("data/workload.jsonl")])):
+    work[i] = w
+recs = [json.loads(l) for f in (stock_f, verb_f) for l in open(f)]
 
-out = {"runs": {}, "summaries": {}, "sim": {}}
-for d in results:
-    name = os.path.basename(d.rstrip("/"))
-    if os.path.exists(f"{d}/summary.json"):
-        out["summaries"][name] = json.load(open(f"{d}/summary.json"))
-    turns = []
-    for f in sorted(glob.glob(f"{d}/*.json")):
-        if f.endswith("summary.json"):
-            continue
-        r = json.load(open(f))
-        runs = {}
-        for c, x in r["runs"].items():
-            runs[c] = {"steps": [[s["pos"], s["draft"], s["accepted"], round(s["dt"], 4)] for s in x["steps"]], "dt": x["dt"], "n": len(x["out"]), "identical": x["identical"]}
-        turns.append({"id": r["id"], "kind": r["kind"], "prompt_tokens": r["prompt_tokens"], "prefill_s": r["prefill_s"], "pieces": [piece(t) for t in r["runs"]["none"]["out"]], "runs": runs})
-    out["runs"][name] = turns
 
-for f in glob.glob("results/sim_*.jsonl"):
-    recs = [json.loads(l) for l in open(f)]
-    agg = {}
-    for r in recs:
-        for k in (r["kind"], "all"):
-            a = agg.setdefault(k, {"turns": 0, "tokens": 0, "base": 0.0, "cfg": {}})
-            a["turns"] += 1
-            a["tokens"] += r["n"]
-            a["base"] += r["base_time"]
-            for c, v in r["cfg"].items():
-                b = a["cfg"].setdefault(c, {"passes": 0, "time": 0.0})
-                b["passes"] += v["passes"]
-                b["time"] += v["time"]
-    out["sim"][os.path.basename(f)[4:-6]] = agg
+def pieces(ids):
+    out, prev = [], ""
+    for j in range(len(ids)):
+        s = tok.decode(ids[: j + 1])
+        out.append(s[len(prev):] if s.startswith(prev) else tok.decode([ids[j]]))
+        prev = s
+    return out
 
-os.makedirs("demo", exist_ok=True)
+
+def run(r):
+    tr, steps, pos = r["trace"], [], 1 if r["cfg"] != "base" else 0
+    t_prev = tr[0][3] - max(0.0, r["dt"] - (tr[-1][3] - tr[0][3]))
+    for k, a, src, t in tr:
+        if pos >= r["n"]:
+            break
+        steps.append([pos, k, a, src, round(t - t_prev, 4)])
+        pos += 1 if r["cfg"] == "base" else a + 1
+        t_prev = t
+    return {"pieces": pieces(r["out"]), "steps": steps, "dt": r["dt"], "n": r["n"], "identical": r["identical"]}
+
+
+turns = collections.defaultdict(dict)
+for r in recs:
+    if r["dataset"] == "agent" and r.get("trace"):
+        turns[r["i"]][r["cfg"]] = r
+out = {"turns": [], "summary": {}}
+for i, cfgs in sorted(turns.items()):
+    w = work[i]
+    out["turns"].append({"id": w["id"], "kind": w["kind"], "prompt_tokens": cfgs["base"]["prompt_tokens"], "runs": {c: run(r) for c, r in cfgs.items()}})
+
+agg = {}
+for t in out["turns"]:
+    for k in (t["kind"], "all"):
+        a = agg.setdefault(k, {"turns": 0, "cfg": {}})
+        a["turns"] += 1
+        for c, r in t["runs"].items():
+            b = a["cfg"].setdefault(c, {"tokens": 0, "time": 0.0, "passes": 0, "identical": 0})
+            b["tokens"] += r["n"]; b["time"] += r["dt"]; b["passes"] += len(r["steps"]) + (c != "base"); b["identical"] += r["identical"]
+out["summary"] = agg
+
+
 with open("demo/data.js", "w") as fh:
     fh.write("window.VERBATIM = " + json.dumps(out, separators=(",", ":")) + ";\n")
 print("wrote demo/data.js", os.path.getsize("demo/data.js") // 1024, "KB")
