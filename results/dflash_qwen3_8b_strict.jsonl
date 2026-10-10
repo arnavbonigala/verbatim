@@ -1,0 +1,6 @@
+{"dataset": "agent", "i": 0, "cfg": "base", "prompt_tokens": 5270, "n": 91, "dt": 5.297072499990463, "steps": 91, "identical": true, "agree_prefix": 91}
+{"dataset": "agent", "i": 0, "cfg": "sbase", "prompt_tokens": 5270, "n": 91, "dt": 9.172814166639, "steps": 91, "identical": true, "agree_prefix": 91}
+{"dataset": "agent", "i": 0, "cfg": "adapt", "prompt_tokens": 5270, "n": 85, "dt": 17.348155041690916, "steps": 29, "identical": false, "agree_prefix": 31}
+{"dataset": "agent", "i": 0, "cfg": "sadapt", "prompt_tokens": 5270, "n": 91, "dt": 10.064422375056893, "steps": 23, "identical": true, "agree_prefix": 91}
+{"dataset": "agent", "i": 0, "cfg": "adaptc", "prompt_tokens": 5270, "n": 85, "dt": 26.026656332891434, "steps": 30, "identical": false, "agree_prefix": 31}
+{"dataset": "agent", "i": 0, "cfg": "sadaptc", "prompt_tokens": 5270, "n": 91, "dt": 11.81783837499097, "steps": 24, "identical": true, "agree_prefix": 91}
