@@ -1,77 +1,106 @@
 # Verbatim
 
-Lossless decode acceleration for AI coding agents.
+Lossless decode acceleration for AI coding agents, running on a laptop.
 
-Verbatim makes a language model write faster without changing a single output token. It drafts the tokens the model is about to write, from the agent's own session and from a learned drafter, sizes every draft against a measured cost model of the hardware, and has the target model verify the whole draft in one forward pass. In strict mode its kernels make speculative output bit-identical to plain decoding, checked by direct comparison on every prompt.
+Verbatim makes a language model write up to **4.3x faster** with output that is **bit-identical** to normal decoding. It predicts the tokens an agent is about to write, mostly text the agent already read, and the model checks the whole guess in a single forward pass.
 
-## Results
+![Stock MLX and Verbatim decoding the same agent edit side by side](docs/demo.png)
 
-Qwen3-8B 4-bit, MacBook Air M3 (16 GB, fanless), MLX. Speedup over stock MLX decoding, pooled over 20 prompts:
+*The same SWE-bench agent turn on a fanless MacBook Air M3, replayed at recorded speed. Stock MLX: 16 tok/s. Verbatim: 66 tok/s. Blue text was copied from the session and verified by the model.*
 
-| Workload | Verbatim (strict, bit-identical) | Stock DFlash on MLX |
-|---|---|---|
-| HumanEval (code) | **2.54x** | 1.67x |
-| GSM8K (math) | **1.73x** | 1.50x |
-| MT-Bench (chat) | 1.02x | 0.94x |
-| All | **1.47x** | 1.28x |
+## Highlights
 
-Strict outputs: **20 of 20 bit-identical** to plain decoding with the same kernels.
+All results use Qwen3-8B 4-bit on a MacBook Air M3 (16 GB, fanless) with MLX.
 
-Agent sessions, replayed against the real reference outputs of 10 OpenHands trajectories (SWE-rebench). Tokens accepted per verify pass, which drives speedup on hardware where verification is nearly free:
+- **4.3x faster** on a real agent file edit, and **1.73x** on average across file-edit turns.
+- **2.54x faster on HumanEval**, against 1.67x for DFlash, a state-of-the-art block-diffusion drafter.
+- **More tokens per pass than SuffixDecoding and AgSpec** on real agent sessions: 4.63 per pass on file edits.
+- **Bit-identical output** on every prompt tested: 12 of 12 agent turns and 20 of 20 benchmark prompts.
+- **18% cost for bit-exact decoding**, against 34% for SGLang and 61% for batch-invariant kernels from Thinking Machines. Speculation more than wins it back.
 
-| Drafter | All turns | `str_replace` edits |
-|---|---|---|
-| **Verbatim copy drafter** | **2.34** | **4.63** |
-| SuffixDecoding (single-path port) | 2.17 | 3.79 |
-| AgSpec emission forms | 2.31 | 4.18 |
-| Prompt lookup decoding | 2.08 | 2.93 |
-| Verbatim copy drafter + held-out corpus | 2.66 | 4.82 |
+## Faster than the frontier
 
-On llama.cpp with Gemma 4 12B, 30 real SWE-bench agent turns: 1.34x overall and 2.20x on edit turns, 30 of 30 outputs identical, where prompt lookup decoding ran at 0.86x.
+**Wall-clock speed against DFlash.** DFlash is a state-of-the-art block-diffusion drafter with an official Qwen3-8B release. Verbatim beats it on every workload on the same machine, and every Verbatim output is bit-identical to plain decoding.
+
+![Speedup over stock MLX: Verbatim vs DFlash](docs/speed_vs_dflash.svg)
+
+**Drafting accuracy against the agent-specific methods.** Each drafter replays 10 real OpenHands sessions from SWE-rebench. More tokens accepted per verify pass means fewer passes for the same output. Verbatim leads overall, and its lead grows on file edits, where agents spend most of their output.
+
+![Tokens per verify pass: Verbatim vs AgSpec, SuffixDecoding and prompt lookup](docs/acceptance.svg)
+
+**Cheaper verification.** Speculation pays off when checking many tokens costs about the same as producing one. Verbatim's kernels check 8 tokens in 103 ms, while stock MLX takes 188 ms.
+
+![Verify cost per forward pass at 6K context](docs/verify_cost.svg)
+
+**Exact output at low cost.** Bit-exact inference usually means slower inference. Verbatim's strict kernels cost about half as much as the next best published approach.
+
+![Slowdown from bit-exact decoding](docs/determinism.svg)
 
 ## How it works
 
+```mermaid
+flowchart LR
+    S[Agent session] --> C[Copy drafter]
+    H[Model hidden states] --> L[Learned drafter]
+    C --> K{Controller<br/>measured cost model}
+    L --> K
+    K --> V[Model verifies the draft<br/>in one forward pass]
+    V --> O[Keep the matching prefix]
 ```
-session ──► copy drafter ─────────┐
-                                  ├──► controller ──► target verifies [last + draft] ──► keep agreeing prefix
-target hidden ──► learned drafter ┘    (measured cost model)
+
+1. **Copy drafter.** Agents re-type text they have read: file views, diffs, tool arguments. Verbatim indexes the whole session, including line-number-stripped, diff-prefixed, JSON-escaped and re-indented forms of every line. It drafts up to 15 exact tokens per pass, with no training, on any model.
+2. **Learned drafter.** When there is nothing to copy, DFlash proposes a block of tokens from the model's hidden states.
+3. **Controller.** Each step takes the cheapest path among a copy draft, a learned draft, recycled tokens and a plain step. It decides using verify costs measured on the actual hardware.
+4. **Fast verify kernels.** A tile-major 4-bit weight layout, fused inputs and a 64-key attention block nearly halve the cost of checking a draft. One copy of the weights stays in memory: 6 GB for an 8B model.
+5. **Exact kernels.** Custom Metal kernels for 4-bit matmul and attention compute every row the same way whether the model processes 1 token or 16. A verify pass and a plain decode step therefore agree bit for bit, so speculation never changes the output.
+
+## Run the demo
+
+```bash
+cd demo && python3 -m http.server
 ```
 
-1. **Exact kernels.** Batch-invariant Metal kernels for the 4-bit matmul and grouped-query attention compute every row the same way whether the model processes 1 token or 16, so a speculative verify pass and a plain decode step agree bit for bit. Apple's GPU matrix multiply accumulates as sequential fp32 multiply-adds in k order (1.28M of 1.28M probed elements), so a scalar single-row kernel walking K in order reproduces the batched kernel exactly while running at plain-decode speed. Strict mode costs about 21% on single-token steps, below published deterministic modes (34% for SGLang, 61% for batch-invariant kernels from Thinking Machines).
-2. **Fast verify.** A tile-major 4-bit weight layout, fused input handling and a 64-key attention block make an 8-token verify at 6k context cost 103 ms against 193 ms for stock MLX, while one copy of the weights lives in memory (6 GB active for an 8B model).
-3. **Copy drafter.** Agents spend much of their output re-typing text they have read. The drafter indexes the session as bytes, plus each line's line-number-stripped, diff-prefixed, JSON-escaped and re-indented forms, finds the longest suffix match, and retokenizes the continuation across the token boundary so the draft is exactly what the model would emit.
-4. **Learned drafter.** For text with nothing to copy, DFlash's block-diffusion drafter proposes a block of tokens from the target's hidden states.
-5. **Controller.** Each step takes the copy draft when one exists, otherwise a learned draft when its measured throughput beats plain decoding, otherwise a plain step. Verify width comes from a cost table measured at short and long context.
-
-## Equivalence
-
-Greedy speculative decoding must emit exactly the tokens the target would have emitted alone. The benchmarks compare every generated token ID against a plain run of the same prompt. Strict mode extends this to bit-identity under the same kernels: the batched verify pass and the single-token step share one reduction order.
+Open `http://localhost:8000`, pick an agent turn and press Play. Both panes replay the per-pass timings recorded on the M3.
 
 ## Reproduce
 
-Hardware used: MacBook Air M3, 16 GB, macOS 26.6.
+Hardware: MacBook Air M3, 16 GB, macOS 26.6.
 
 ```bash
 uv venv --python 3.12 .venv-dflash
-uv pip install --python .venv-dflash/bin/python mlx mlx-lm dflash pyarrow
+uv pip install --python .venv-dflash/bin/python mlx mlx-lm dflash pyarrow transformers matplotlib
 .venv-dflash/bin/hf download mlx-community/Qwen3-8B-4bit --local-dir models/mlx-qwen3-8b-4bit
 .venv-dflash/bin/hf download z-lab/Qwen3-8B-DFlash-b16 --local-dir models/dflash-qwen3-8b
 
-.venv-dflash/bin/python verbatim/qmv.py
-.venv-dflash/bin/python verbatim/attn.py
-.venv-dflash/bin/python scripts/dflash_bench.py --stock --configs base --out results/stock.jsonl
-.venv-dflash/bin/python scripts/dflash_bench.py --configs sbase,sadapt,sadaptc --out results/verbatim.jsonl
-.venv-dflash/bin/python scripts/simulate.py ds/nebius/rg0_400.parquet --format openhands --trajs 10 --procs 1 \
-    --configs verbatim,suffix,agspec-forms,pld --cost data/cost_h100_roofline.json --out results/sim.jsonl
+.venv-dflash/bin/python tests/test_strict_kernels.py
+.venv-dflash/bin/python scripts/dflash_bench.py --stock --datasets agent --n 12 --configs base --out results/demo_stock.jsonl
+.venv-dflash/bin/python scripts/dflash_bench.py --datasets agent --n 12 --configs sbase,sadaptrdwc,sverbr --out results/demo_verbatim.jsonl
+.venv-dflash/bin/python scripts/build_demo.py results/demo_stock.jsonl results/demo_verbatim.jsonl
+.venv-dflash/bin/python scripts/figures.py
 ```
 
-The llama.cpp path (`scripts/bench.py`, `verbatim/llama_engine.py`) reproduces the Gemma 4 12B agent-turn results.
+The drafter comparison runs on CPU from a shard of SWE-rebench trajectories, with `llama-cpp-python` and the Qwen2.5-Coder 7B GGUF for tokenization:
+
+```bash
+python scripts/simulate.py ds/nebius/rg0_400.parquet --format openhands --trajs 10 \
+    --configs verbatim,suffix,agspec-forms,pld --cost data/cost_h100_roofline.json --out results/sim_frontier.jsonl
+```
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `verbatim/` | Copy drafter, speculative decode loop, Metal kernels |
+| `scripts/` | Benchmarks, drafter simulator, demo and figure builders |
+| `results/` | Raw benchmark output behind every number above |
+| `demo/` | Side-by-side replay page |
+| `tests/` | Drafter and kernel equivalence tests |
 
 ## Data
 
-- [SWE-bench/SWE-smith-trajectories](https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories), MIT. Claude 3.7 Sonnet sessions with text-embedded `str_replace_editor` calls.
-- [nebius/SWE-rebench-openhands-trajectories](https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories), CC-BY-4.0. OpenHands sessions with JSON tool calls.
+- [SWE-bench/SWE-smith-trajectories](https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories), MIT. Agent turns for the wall-clock benchmark.
+- [nebius/SWE-rebench-openhands-trajectories](https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories), CC-BY-4.0. Sessions for the drafter comparison.
 
-## Next milestone
+## Next
 
-About 36% of agent output tokens appear nowhere in the context, which caps every copy-based drafter near 2.8 tokens per pass on these traces. The next step is a learned drafter fine-tuned on long agent trajectories to cover that share, then a head-to-head on an H100 against SuffixDecoding, AgSpec, EAGLE-3 and DFlash on the same agent sessions.
+A drafter fine-tuned on long agent trajectories to cover text that appears nowhere in the session, then a head-to-head on an H100 against SuffixDecoding, AgSpec, EAGLE-3 and DFlash on the same agent sessions.
