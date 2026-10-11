@@ -4,7 +4,7 @@ Lossless inference acceleration for private clinical AI.
 
 Verbatim makes a self-hosted model write clinical notes up to **3.4x faster**, with output that is **bit-identical** to the model running without it. It runs on the hardware you already own, keeps patient data on it, and never changes a word of a validated model's output.
 
-Demo: [https://youtu.be/SBwXjz12r_U](https://youtu.be/SBwXjz12r_U(
+Demo: [https://youtu.be/SBwXjz12r_U](https://youtu.be/SBwXjz12r_U)
 
 ![Standard decoding and Verbatim writing the same follow-up note side by side](docs/demo.png)
 
