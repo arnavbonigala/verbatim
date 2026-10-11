@@ -25,6 +25,7 @@ ap.add_argument("--block", type=int, default=8)
 ap.add_argument("--copy-max", type=int, default=15)
 ap.add_argument("--draft-ctx", type=int, default=None)
 ap.add_argument("--repeat", type=int, default=1)
+ap.add_argument("--only", type=int, default=None)
 args = ap.parse_args()
 
 model, draft, tok = load_mlx_models(args.model, args.draft, 4)
@@ -126,9 +127,11 @@ for cfg in configs:
     run(cfg, warm)
 with open(args.out, "a") as fh:
     for ds in args.datasets.split(","):
-        rows = (lambda w: w[:: max(1, len(w) // args.n)][: args.n])([json.loads(l) for l in open("data/workload.jsonl")]) if ds == "agent" else load_and_process_dataset(ds)[: args.n]
+        rows = (lambda w: w[:: max(1, len(w) // args.n)][: args.n])([json.loads(l) for l in open(f"data/{'workload' if ds == 'agent' else 'clinical_workload'}.jsonl")]) if ds in ("agent", "clinical") else load_and_process_dataset(ds)[: args.n]
         for i, row in enumerate(rows):
-            ids = tok.encode(row["prompt"] + "<think>\n\n</think>\n\n", add_special_tokens=False) if ds == "agent" else prompt_ids(row["turns"][0])
+            if args.only is not None and i != args.only:
+                continue
+            ids = tok.encode(row["prompt"] + "<think>\n\n</think>\n\n", add_special_tokens=False) if ds == "agent" else tok.encode(row["prompt"], add_special_tokens=False) if ds == "clinical" else prompt_ids(row["turns"][0])
             res = {}
             order = configs[i % len(configs):] + configs[: i % len(configs)]
             for cfg in order:
