@@ -56,15 +56,7 @@ ACI-Bench has no repeat visits, so Qwen3-8B wrote a six-week follow-up conversat
 
 ## How it works
 
-```mermaid
-flowchart LR
-    S[Chart and transcript] --> C[Copy drafter]
-    H[Model hidden states] --> L[Learned drafter]
-    C --> K{Controller<br/>measured cost model}
-    L --> K
-    K --> V[Model verifies the draft<br/>in one forward pass]
-    V --> O[Keep the matching prefix]
-```
+![Verbatim pipeline: copy and learned drafters feed a cost-model controller, the model verifies each draft in one pass](docs/architecture.svg)
 
 1. **Copy drafter.** Indexes everything in the agent's context, including the prior note, the transcript and the agent's own output, and drafts the exact tokens the model is about to carry over, up to 15 per pass. It needs no training and works with any model.
 2. **Learned drafter.** For new text, DFlash proposes a block of tokens from the model's hidden states.

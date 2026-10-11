@@ -84,3 +84,14 @@ ax.set_xlim(0, 70)
 save(fig, "determinism")
 print("strict overhead", round(strict, 1), "dflash", [round(x, 2) for x in df], "verbatim", [round(x, 2) for x in vb])
 print("clinical", [round(x, 1) for x in cs], [round(x, 1) for x in cv])
+
+fig, ax = plt.subplots(figsize=(9, 2.6))
+ax.set_xlim(0, 9.3); ax.set_ylim(0.1, 2.5); ax.axis("off")
+nodes = {"s": (0.8, 1.9, "Chart and\ntranscript"), "h": (0.8, 0.7, "Model hidden\nstates"), "c": (2.9, 1.9, "Copy drafter"), "l": (2.9, 0.7, "Learned drafter"), "k": (4.9, 1.3, "Controller\nmeasured cost model"), "v": (6.9, 1.3, "Model verifies the\ndraft in one pass"), "o": (8.5, 1.3, "Keep the\nmatching prefix")}
+box = {}
+for k, (x, y, t) in nodes.items():
+    box[k] = ax.text(x, y, t, ha="center", va="center", fontsize=10, color="white" if k in "kv" else "#1b1d21", bbox=dict(boxstyle="round,pad=0.5", fc=VB if k in "kv" else "#eef1f6", ec=VB if k in "kv" else "#c9ced6"))
+fig.canvas.draw()
+for a, b in ("sc", "hl", "ck", "lk", "kv", "vo"):
+    ax.annotate("", nodes[b][:2], nodes[a][:2], arrowprops=dict(arrowstyle="-|>", color="#5b616b", lw=1.3, mutation_scale=12, patchA=box[a].get_bbox_patch(), patchB=box[b].get_bbox_patch(), shrinkA=2, shrinkB=2))
+save(fig, "architecture")
