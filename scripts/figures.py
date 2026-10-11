@@ -1,4 +1,3 @@
-import collections
 import json
 
 import matplotlib
@@ -43,19 +42,23 @@ ax.set_ylim(0, max(vb) * 1.2)
 ax.set_title("Qwen3-8B 4-bit, MacBook Air M3", loc="left", fontsize=11, color="#555")
 save(fig, "speed_vs_dflash")
 
-sim = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
-for r in map(json.loads, open("results/sim_frontier.jsonl")):
-    for k in (r["kind"], "all"):
-        for c, v in r["cfg"].items():
-            sim[k][c][0] += r["n"]; sim[k][c][1] += v["passes"]
-cfgs = [("pld", "Prompt lookup", "#d7d9dc"), ("suffix", "SuffixDecoding", GREY), ("agspec-forms", "AgSpec", MID), ("verbatim", "Verbatim", VB)]
-edit = next(k for k in sim if "str_replace" in k)
+def agg(f, cfg, kind=None):
+    w = [json.loads(l)["kind"] for l in open("data/clinical_workload.jsonl")]
+    rs = [r for r in map(json.loads, open(f)) if r["cfg"] == cfg and (kind is None or w[r["i"]] == kind)]
+    return sum(r["n"] for r in rs) / sum(r["dt"] for r in rs)
+
+
+groups = [("follow_up", "Follow-up visit:\nupdate the patient's note"), (None, "Full clinic day:\nnew visits and follow-ups")]
+cs = [agg("results/clinical_stock.jsonl", "base", k) for k, _ in groups]
+cv = [agg("results/clinical_verbatim.jsonl", "sadaptrdwc", k) for k, _ in groups]
 fig, ax = plt.subplots(figsize=(7, 3.6))
-bars(ax, ["All agent turns", "File edits"], [(n, [sim[k][c][0] / sim[k][c][1] for k in ("all", edit)], col) for c, n, col in cfgs], fmt="{:.2f}", loc="upper left", ncol=2)
-ax.set_ylabel("Tokens per verify pass")
-ax.set_ylim(0, 6.2)
-ax.set_title("Replay of real OpenHands sessions (SWE-rebench)", loc="left", fontsize=11, color="#555")
-save(fig, "acceptance")
+bars(ax, [n for _, n in groups], [("Stock MLX", cs, GREY), ("Verbatim", cv, VB)], fmt="{:.1f}")
+for i, (a, b) in enumerate(zip(cs, cv)):
+    ax.text(i + 0.2, b * 1.12, f"{b / a:.2f}x faster", ha="center", fontsize=11, fontweight="bold", color=VB)
+ax.set_ylabel("Tokens per second")
+ax.set_ylim(0, max(cv) * 1.35)
+ax.set_title("Clinical scribe agent, Qwen3-8B 4-bit, MacBook Air M3", loc="left", fontsize=11, color="#555")
+save(fig, "clinical")
 
 cost = {k: json.load(open(f"data/verify_costs_{k}.json")) for k in ("stock", "verbatim")}
 st, vt = cost["stock"]["False"][1], cost["verbatim"]["True"][1]
@@ -70,8 +73,7 @@ ax.legend(frameon=False)
 ax.set_title("Cost of one verify pass at 6K context", loc="left", fontsize=11, color="#555")
 save(fig, "verify_cost")
 
-base = tps("results/demo_stock.jsonl", "agent", "base")
-strict = 100 * (1 - tps("results/demo_verbatim.jsonl", "agent", "sbase") / base)
+strict = 100 * (1 - agg("results/clinical_verbatim.jsonl", "sbase") / agg("results/clinical_stock.jsonl", "base"))
 fig, ax = plt.subplots(figsize=(7, 2.6))
 rows = [("Thinking Machines\nbatch-invariant kernels", 61, GREY), ("SGLang\ndeterministic mode", 34, GREY), ("Verbatim strict mode", strict, VB)]
 ax.barh([r[0] for r in rows], [r[1] for r in rows], color=[r[2] for r in rows], height=0.6)
@@ -81,4 +83,4 @@ ax.set_xlabel("Slowdown from bit-exact decoding (lower is better)")
 ax.set_xlim(0, 70)
 save(fig, "determinism")
 print("strict overhead", round(strict, 1), "dflash", [round(x, 2) for x in df], "verbatim", [round(x, 2) for x in vb])
-print({k: {c: round(sim[k][c][0] / sim[k][c][1], 2) for c in sim[k]} for k in ("all", edit)})
+print("clinical", [round(x, 1) for x in cs], [round(x, 1) for x in cv])
