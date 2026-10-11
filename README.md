@@ -1,38 +1,56 @@
 # Verbatim
 
-Lossless decode acceleration for AI coding agents, running on a laptop.
+Lossless inference acceleration for private clinical AI.
 
-Verbatim makes a language model write up to **4.3x faster** with output that is **bit-identical** to normal decoding. It predicts the tokens an agent is about to write, mostly text the agent already read, and the model checks the whole guess in a single forward pass.
+Verbatim makes a self-hosted model write clinical notes up to **3.4x faster**, with output that is **bit-identical** to the model running without it. It runs on the hardware you already own, keeps patient data on it, and never changes a word of a validated model's output.
 
-![Stock MLX and Verbatim decoding the same agent edit side by side](docs/demo.png)
+![Standard decoding and Verbatim writing the same follow-up note side by side](docs/demo.png)
 
-*The same SWE-bench agent turn on a fanless MacBook Air M3, replayed at recorded speed. Stock MLX: 16 tok/s. Verbatim: 66 tok/s. Blue text was copied from the session and verified by the model.*
+*An autonomous scribe updating a patient's note after a follow-up visit, on a fanless MacBook Air M3 with Qwen3-8B, replayed at recorded speed. Blue text was carried over from the chart or transcript and verified by the model in bulk.*
 
 ## Highlights
 
-All results use Qwen3-8B 4-bit on a MacBook Air M3 (16 GB, fanless) with MLX.
+Qwen3-8B 4-bit on a MacBook Air M3 (16 GB, fanless), against stock MLX.
 
-- **4.3x faster** on a real agent file edit, and **1.73x** on average across file-edit turns.
-- **2.54x faster on HumanEval**, against 1.67x for DFlash, a state-of-the-art block-diffusion drafter.
-- **More tokens per pass than SuffixDecoding and AgSpec** on real agent sessions: 4.63 per pass on file edits.
-- **Bit-identical output** on every prompt tested: 12 of 12 agent turns and 20 of 20 benchmark prompts.
-- **18% cost for bit-exact decoding**, against 34% for SGLang and 61% for batch-invariant kernels from Thinking Machines. Speculation more than wins it back.
+- **2.37x faster on follow-up visits**, where the agent updates the patient's existing note: 27.4 tok/s against 11.6.
+- **Up to 3.4x faster** on a single patient visit.
+- **1.55x faster across a full clinic day** of new visits and follow-ups.
+- **16 of 16 notes bit-identical** to plain decoding.
+- **3.7% cost for bit-exact decoding**, against 34% for SGLang and 61% for batch-invariant kernels from Thinking Machines.
+- **6 GB of memory** for an 8B model. A laptop runs it fully offline.
+
+![Clinical scribe speed: Verbatim vs stock MLX](docs/clinical.svg)
+
+## Why clinical notes
+
+Most of a clinical note already exists somewhere. In a study of 23,630 signed progress notes, 46% of the text was copied and 36% imported, and only 18% was typed fresh ([JAMA Internal Medicine](https://jamanetwork.com/journals/jamainternalmedicine/article-abstract/2629493)). A documentation agent works the same way. At each visit it carries the history, medications and problem list forward, quotes the exam and the patient, and changes what changed.
+
+Language models write one token per forward pass no matter how predictable the text is. Verbatim finds the passages the agent is about to carry over, and the model checks a whole passage in a single pass.
+
+Every output is bit-identical to the model without Verbatim. Speeding up a model usually changes what it writes. Verbatim leaves the output untouched: the notes you validated are the notes you ship, and any note can be replayed exactly for audit. FDA guidance on changes to AI-enabled devices calls for reproducible model performance.
+
+## The benchmark
+
+The workload comes from [ACI-Bench](https://github.com/wyim/aci-bench) (CC BY 4.0), a set of doctor-patient conversations with clinician-written notes.
+
+| Task | What the agent does | Prompts |
+|---|---|---|
+| **New visit** | Writes the note from the visit transcript | 8 |
+| **Follow-up visit** | Reads the patient's current note and a follow-up transcript, then writes the complete updated note | 8 |
+
+ACI-Bench has no repeat visits, so Qwen3-8B wrote a six-week follow-up conversation for each patient. Each conversation includes a dose change, a new complaint and new exam findings. Stock MLX and Verbatim alternate prompt by prompt on the same laptop, so both run under the same conditions. Outputs run to 768 tokens.
 
 ## Faster than the frontier
 
-**Wall-clock speed against DFlash.** DFlash is a state-of-the-art block-diffusion drafter with an official Qwen3-8B release. Verbatim beats it on every workload on the same machine, and every Verbatim output is bit-identical to plain decoding.
+**Wall-clock speed against DFlash.** DFlash is a state-of-the-art block-diffusion drafter with an official Qwen3-8B release. Verbatim beats it on every benchmark on the same machine, with every output bit-identical.
 
 ![Speedup over stock MLX: Verbatim vs DFlash](docs/speed_vs_dflash.svg)
 
-**Drafting accuracy against the agent-specific methods.** Each drafter replays 10 real OpenHands sessions from SWE-rebench. More tokens accepted per verify pass means fewer passes for the same output. Verbatim leads overall, and its lead grows on file edits, where agents spend most of their output.
-
-![Tokens per verify pass: Verbatim vs AgSpec, SuffixDecoding and prompt lookup](docs/acceptance.svg)
-
-**Cheaper verification.** Speculation pays off when checking many tokens costs about the same as producing one. Verbatim's kernels check 8 tokens in 103 ms, while stock MLX takes 188 ms.
+**Cheaper verification.** Checking 8 tokens costs Verbatim 103 ms and stock MLX 188 ms. Cheap checks are what turn a good draft into real speed.
 
 ![Verify cost per forward pass at 6K context](docs/verify_cost.svg)
 
-**Exact output at low cost.** Bit-exact inference usually means slower inference. Verbatim's strict kernels cost about half as much as the next best published approach.
+**Exact output, nearly free.** Bit-exact inference usually costs a third or more of throughput. Verbatim's strict kernels cost under 4%.
 
 ![Slowdown from bit-exact decoding](docs/determinism.svg)
 
@@ -40,7 +58,7 @@ All results use Qwen3-8B 4-bit on a MacBook Air M3 (16 GB, fanless) with MLX.
 
 ```mermaid
 flowchart LR
-    S[Agent session] --> C[Copy drafter]
+    S[Chart and transcript] --> C[Copy drafter]
     H[Model hidden states] --> L[Learned drafter]
     C --> K{Controller<br/>measured cost model}
     L --> K
@@ -48,11 +66,11 @@ flowchart LR
     V --> O[Keep the matching prefix]
 ```
 
-1. **Copy drafter.** Agents re-type text they have read: file views, diffs, tool arguments. Verbatim indexes the whole session, including line-number-stripped, diff-prefixed, JSON-escaped and re-indented forms of every line. It drafts up to 15 exact tokens per pass, with no training, on any model.
-2. **Learned drafter.** When there is nothing to copy, DFlash proposes a block of tokens from the model's hidden states.
-3. **Controller.** Each step takes the cheapest path among a copy draft, a learned draft, recycled tokens and a plain step. It decides using verify costs measured on the actual hardware.
-4. **Fast verify kernels.** A tile-major 4-bit weight layout, fused inputs and a 64-key attention block nearly halve the cost of checking a draft. One copy of the weights stays in memory: 6 GB for an 8B model.
-5. **Exact kernels.** Custom Metal kernels for 4-bit matmul and attention compute every row the same way whether the model processes 1 token or 16. A verify pass and a plain decode step therefore agree bit for bit, so speculation never changes the output.
+1. **Copy drafter.** Indexes everything in the agent's context, including the prior note, the transcript and the agent's own output, and drafts the exact tokens the model is about to carry over, up to 15 per pass. It needs no training and works with any model.
+2. **Learned drafter.** For new text, DFlash proposes a block of tokens from the model's hidden states.
+3. **Controller.** Each step takes the cheapest path among a copy draft, a learned draft, recycled tokens and a plain step, using verify costs measured on the actual hardware.
+4. **Fast verify kernels.** A tile-major 4-bit weight layout, fused inputs and a 64-key attention block nearly halve the cost of checking a draft.
+5. **Exact kernels.** Custom Metal kernels for 4-bit matmul and attention compute every row the same way whether the model processes 1 token or 16. A verify pass and a plain decode step agree bit for bit, so speculation never changes the output.
 
 ## Run the demo
 
@@ -60,7 +78,7 @@ flowchart LR
 cd demo && python3 -m http.server
 ```
 
-Open `http://localhost:8000`, pick an agent turn and press Play. Both panes replay the per-pass timings recorded on the M3.
+Open `http://localhost:8000`, pick a patient visit and press Play. Both panes replay the per-pass timings recorded on the M3.
 
 ## Reproduce
 
@@ -71,19 +89,19 @@ uv venv --python 3.12 .venv-dflash
 uv pip install --python .venv-dflash/bin/python mlx mlx-lm dflash pyarrow transformers matplotlib
 .venv-dflash/bin/hf download mlx-community/Qwen3-8B-4bit --local-dir models/mlx-qwen3-8b-4bit
 .venv-dflash/bin/hf download z-lab/Qwen3-8B-DFlash-b16 --local-dir models/dflash-qwen3-8b
+mkdir -p ds/aci && for f in valid clinicalnlp_taskB_test1; do
+  curl -sLo ds/aci/$f.csv https://raw.githubusercontent.com/wyim/aci-bench/main/data/challenge_data/$f.csv; done
 
 .venv-dflash/bin/python tests/test_strict_kernels.py
-.venv-dflash/bin/python scripts/dflash_bench.py --stock --datasets agent --n 12 --configs base --out results/demo_stock.jsonl
-.venv-dflash/bin/python scripts/dflash_bench.py --datasets agent --n 12 --configs sbase,sadaptrdwc,sverbr --out results/demo_verbatim.jsonl
-.venv-dflash/bin/python scripts/build_demo.py results/demo_stock.jsonl results/demo_verbatim.jsonl
+.venv-dflash/bin/python scripts/build_clinical.py
+for i in $(seq 0 15); do
+  .venv-dflash/bin/python scripts/dflash_bench.py --stock --datasets clinical --n 16 --only $i --max-tokens 768 \
+      --configs base --out results/clinical_stock.jsonl
+  .venv-dflash/bin/python scripts/dflash_bench.py --datasets clinical --n 16 --only $i --max-tokens 768 \
+      --configs sbase,sadaptrdwc,sverbr --out results/clinical_verbatim.jsonl
+done
+.venv-dflash/bin/python scripts/build_demo.py results/clinical_stock.jsonl results/clinical_verbatim.jsonl
 .venv-dflash/bin/python scripts/figures.py
-```
-
-The drafter comparison runs on CPU from a shard of SWE-rebench trajectories, with `llama-cpp-python` and the Qwen2.5-Coder 7B GGUF for tokenization:
-
-```bash
-python scripts/simulate.py ds/nebius/rg0_400.parquet --format openhands --trajs 10 \
-    --configs verbatim,suffix,agspec-forms,pld --cost data/cost_h100_roofline.json --out results/sim_frontier.jsonl
 ```
 
 ## Layout
@@ -91,16 +109,12 @@ python scripts/simulate.py ds/nebius/rg0_400.parquet --format openhands --trajs 
 | Path | Contents |
 |---|---|
 | `verbatim/` | Copy drafter, speculative decode loop, Metal kernels |
-| `scripts/` | Benchmarks, drafter simulator, demo and figure builders |
+| `scripts/` | Workload builder, benchmark, demo and figure builders |
+| `data/` | Clinical workload and measured hardware cost curves |
 | `results/` | Raw benchmark output behind every number above |
 | `demo/` | Side-by-side replay page |
 | `tests/` | Drafter and kernel equivalence tests |
 
-## Data
-
-- [SWE-bench/SWE-smith-trajectories](https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories), MIT. Agent turns for the wall-clock benchmark.
-- [nebius/SWE-rebench-openhands-trajectories](https://huggingface.co/datasets/nebius/SWE-rebench-openhands-trajectories), CC-BY-4.0. Sessions for the drafter comparison.
-
 ## Next
 
-A drafter fine-tuned on long agent trajectories to cover text that appears nowhere in the session, then a head-to-head on an H100 against SuffixDecoding, AgSpec, EAGLE-3 and DFlash on the same agent sessions.
+Longitudinal patient summaries across many visits, pre-charting from the full record, and multi-patient serving on a single workstation GPU.
