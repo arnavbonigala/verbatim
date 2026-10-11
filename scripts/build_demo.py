@@ -7,10 +7,11 @@ from transformers import AutoTokenizer
 
 stock_f, verb_f = sys.argv[1:3]
 tok = AutoTokenizer.from_pretrained("models/mlx-qwen3-8b-4bit")
-work = {}
-for i, w in enumerate((lambda w: w[:: max(1, len(w) // 12)][:12])([json.loads(l) for l in open("data/workload.jsonl")])):
-    work[i] = w
 recs = [json.loads(l) for f in (stock_f, verb_f) for l in open(f)]
+ds = recs[0]["dataset"]
+work = [json.loads(l) for l in open(f"data/{'workload' if ds == 'agent' else 'clinical_workload'}.jsonl")]
+n = len({r["i"] for r in recs})
+work = dict(enumerate(work[:: max(1, len(work) // n)][:n]))
 
 
 def pieces(ids):
@@ -36,7 +37,7 @@ def run(r):
 
 turns = collections.defaultdict(dict)
 for r in recs:
-    if r["dataset"] == "agent" and r.get("trace"):
+    if r["dataset"] == ds and r.get("trace"):
         turns[r["i"]][r["cfg"]] = r
 out = {"turns": [], "summary": {}}
 for i, cfgs in sorted(turns.items()):

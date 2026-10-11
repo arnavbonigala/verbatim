@@ -49,15 +49,15 @@ button.primary { background: var(--accent); color: var(--bg); border-color: var(
 <body>
 <main>
   <h1>Verbatim</h1>
-  <p class="lede">The same agent turn, decoded by stock MLX and by Verbatim, at the speed each actually ran. Qwen3-8B on a MacBook Air M3. Identical output.</p>
+  <p class="lede">An autonomous clinical scribe writing and updating a patient's note, run privately on a MacBook Air with Qwen3-8B. Standard one-token-at-a-time decoding on the left, Verbatim on the right, each at the speed it actually ran. Same note, bit for bit.</p>
   <div class="controls">
-    <label>Agent turn <select id="turn"></select></label>
+    <label>Patient visit <select id="turn"></select></label>
     <button class="primary" id="play">Play</button>
     <button id="reset">Reset</button>
   </div>
   <div class="panes">
-    <section class="pane" aria-label="Stock MLX">
-      <header><h2>Stock MLX</h2><div class="stats" id="lstats"></div></header>
+    <section class="pane" aria-label="Standard decoding">
+      <header><h2>Standard decoding</h2><div class="stats" id="lstats"></div></header>
       <div class="progress"><i id="lbar"></i></div>
       <pre class="out" id="lout" tabindex="0"></pre>
     </section>
@@ -67,16 +67,16 @@ button.primary { background: var(--accent); color: var(--bg); border-color: var(
       <pre class="out" id="rout" tabindex="0"></pre>
     </section>
   </div>
-  <div class="legend"><span><i class="sw" style="background:var(--copy-bg)"></i>Copied from the session</span><span><i class="sw" style="background:var(--draft-bg)"></i>Drafted</span><span><i class="sw" style="background:var(--panel)"></i>Generated one token at a time</span></div>
+  <div class="legend"><span><i class="sw" style="background:var(--copy-bg)"></i>Carried over from the chart or transcript</span><span><i class="sw" style="background:var(--draft-bg)"></i>Drafted</span><span><i class="sw" style="background:var(--panel)"></i>Generated one token at a time</span></div>
 </main>
 <script src="data.js"></script>
 <script>
-const D = window.VERBATIM, M = "sadaptrdwc";
-const KIND = {str_replace: "File edit", after_obs: "After tool output", reasoning: "Reasoning", create: "New file"};
+const D = window.VERBATIM, M = "sadaptrdwc", B = "sbase";
+const KIND = {follow_up: "Follow-up visit, note update", new_visit: "New visit, note from transcript", str_replace: "File edit", after_obs: "After tool output", reasoning: "Reasoning", create: "New file"};
 const $ = id => document.getElementById(id);
 const fmt = (x, d = 1) => Number(x).toFixed(d);
 const esc = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
-const speed = t => t.runs[M].n / t.runs[M].dt / (t.runs.base.n / t.runs.base.dt);
+const speed = t => t.runs[M].n / t.runs[M].dt / (t.runs[B].n / t.runs[B].dt);
 let anim = null;
 const turn = () => D.turns[+$("turn").value];
 function render(out, stats, bar, run, t) {
@@ -97,7 +97,7 @@ function render(out, stats, bar, run, t) {
 }
 function draw(t) {
   const tr = turn();
-  const a = render($("lout"), $("lstats"), $("lbar"), tr.runs.base, t);
+  const a = render($("lout"), $("lstats"), $("lbar"), tr.runs[B], t);
   const b = render($("rout"), $("rstats"), $("rbar"), tr.runs[M], t);
   return a && b;
 }
